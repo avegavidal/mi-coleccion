@@ -12,18 +12,6 @@ export async function getUser() {
   return data.user;
 }
 
-export async function signUp(email, password, displayName) {
-  const { data, error } = await supabase.auth.signUp({
-    email: email.trim(),
-    password,
-    options: {
-      data: { display_name: displayName || email.split('@')[0] }
-    }
-  });
-  if (error) throw error;
-  return data;
-}
-
 export async function signIn(email, password) {
   const { data, error } = await supabase.auth.signInWithPassword({
     email: email.trim(),
@@ -49,16 +37,6 @@ export async function resetPassword(email) {
 
 export async function updatePassword(newPassword) {
   const { data, error } = await supabase.auth.updateUser({ password: newPassword });
-  if (error) throw error;
-  return data;
-}
-
-export async function signInWithMagicLink(email) {
-  const redirectTo = `${window.location.origin}${window.location.pathname}`;
-  const { data, error } = await supabase.auth.signInWithOtp({
-    email: email.trim(),
-    options: { emailRedirectTo: redirectTo }
-  });
   if (error) throw error;
   return data;
 }

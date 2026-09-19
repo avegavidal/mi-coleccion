@@ -7,7 +7,7 @@ let currentUser = null;
 let renderRoot = null;
 let onNavigate = null;
 
-const PUBLIC = new Set(['login', 'register', 'recover']);
+const PUBLIC = new Set(['login', 'recover']);
 
 export function defineRoute(name, handler, { public: isPublic = false } = {}) {
   routes.set(name, { handler, public: isPublic });
@@ -47,8 +47,8 @@ export async function startRouter(root, hooks = {}) {
       navigate('login', true);
       return;
     }
-    if (currentUser && (name === 'login' || name === 'register' || name === 'recover' || !name)) {
-      if (name === 'login' || name === 'register' || name === 'recover') {
+    if (currentUser && (name === 'login' || name === 'recover' || name === 'register' || !name)) {
+      if (name === 'login' || name === 'recover' || name === 'register') {
         navigate('dashboard', true);
         return;
       }

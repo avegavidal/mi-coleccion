@@ -102,7 +102,7 @@ export function parseHashRoute(hash) {
 }
 
 export function isPublicRoute(name) {
-  return ['login', 'register', 'recover'].includes(name);
+  return ['login', 'recover'].includes(name);
 }
 
 export function storagePathOwnedBy(path, userId) {

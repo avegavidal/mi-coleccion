@@ -240,7 +240,23 @@ La UI no cambia: solo el `EmbeddingProvider` y, si hace falta, la dimensión del
 
 ---
 
-## Limitaciones honestas
+## Seguridad: ¿la anon key en el repo es un riesgo?
+
+**No es un breach** si solo publicas la key `anon` / `publishable`.
+
+| Key | ¿Puede estar en el frontend/GitHub? | Uso |
+|-----|-------------------------------------|-----|
+| **anon / publishable** | Sí (está diseñada para eso) | App en el navegador |
+| **service_role** | **NUNCA** | Solo backend / SQL privilegiado |
+
+La protección real es:
+1. Supabase Auth (hay que iniciar sesión)
+2. Row Level Security (cada usuario solo ve sus datos)
+3. Storage privado
+4. Registro público desactivado (cuentas solo desde el panel de Supabase)
+
+Cualquier app web (GitHub Pages, Netlify, etc.) expone la anon key en el JavaScript del cliente. Eso es normal.
+
 
 - Sin proyecto Supabase configurado en `js/config.js`, la app muestra aviso y no puede autenticar.
 - CLIP local no es un scanner comercial de figuras; funciona mejor con varias fotos por pieza (frontal, caja, etc.).

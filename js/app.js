@@ -1,6 +1,6 @@
 import { defineRoute, startRouter, setAuthUser, navigate, getAuthUser } from './utils/router.js';
 import { onAuthStateChange, getSession, signOut } from './services/authService.js';
-import { renderLogin, renderRegister, renderRecover } from './screens/auth.js';
+import { renderLogin, renderRecover } from './screens/auth.js';
 import { renderDashboard } from './screens/dashboard.js';
 import {
   renderCollection, renderAdd, renderItemDetail, renderEdit,
@@ -10,7 +10,6 @@ import { renderIdentify, renderCompare } from './screens/identify.js';
 import { renderWishlist, renderStats, renderAccount, renderSettings } from './screens/wishlist.js';
 
 defineRoute('login', renderLogin, { public: true });
-defineRoute('register', renderRegister, { public: true });
 defineRoute('recover', renderRecover, { public: true });
 defineRoute('dashboard', renderDashboard);
 defineRoute('collection', renderCollection);
@@ -75,7 +74,7 @@ async function boot() {
 
     const raw = (location.hash || '#/').replace(/^#\/?/, '');
     const name = raw.split('/')[0] || 'dashboard';
-    if (!uid && !['login', 'register', 'recover'].includes(name)) {
+    if (!uid && !['login', 'recover'].includes(name)) {
       navigate('login', true);
       return;
     }
