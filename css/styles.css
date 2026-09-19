@@ -1049,6 +1049,11 @@ a.stat-card:active {
   color: #f0a0a0;
 }
 
+.market-link.region-VIS .market-link-region {
+  color: #0f766e;
+  background: var(--accent-soft);
+}
+
 .market-link-label {
   font-weight: 600;
   color: var(--ink);

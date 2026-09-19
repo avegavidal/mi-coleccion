@@ -11,6 +11,7 @@ import { getProfile, signOut, updatePassword, listPasskeys, registerPasskey, del
 import { getDashboardStats } from '../services/collectionService.js';
 import { getRecognitionSettings, updateRecognitionSettings } from '../services/recognitionService.js';
 import { getEmbeddingMeta, warmupEmbeddings } from '../services/embeddingService.js';
+import { getGeminiApiKey, setGeminiApiKey, hasGeminiApiKey } from '../services/visionIdentifyService.js';
 import { navigate } from '../utils/router.js';
 
 export async function renderWishlist(root) {
@@ -217,15 +218,42 @@ export async function renderAccount(root) {
 export async function renderSettings(root) {
   const settings = await getRecognitionSettings();
   const meta = getEmbeddingMeta();
+  const geminiSaved = hasGeminiApiKey();
 
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Configuración' }),
-      el('p', { className: 'page-sub', text: 'Umbrales de similitud y modelo visual.' })
+      el('p', { className: 'page-sub', text: 'IA, umbrales y modelo visual.' })
+    ]),
+    el('section', { className: 'section' }, [
+      el('h2', { text: 'Gemini (relleno por foto)' }),
+      el('p', {
+        className: 'page-sub',
+        text: geminiSaved
+          ? 'Key guardada en este iPhone (no se sube a GitHub).'
+          : 'Pega tu API key de Google AI Studio. Se guarda solo en este dispositivo.'
+      }),
+      el('form', { id: 'gemini-form', className: 'stack-form' }, [
+        el('label', {}, [
+          el('span', { text: 'Gemini API key' }),
+          el('input', {
+            className: 'input',
+            name: 'gemini_key',
+            type: 'password',
+            autocomplete: 'off',
+            placeholder: geminiSaved ? '•••••••• (ya hay una guardada)' : 'AQ.… o AIza…',
+            value: ''
+          })
+        ]),
+        el('div', { className: 'btn-row' }, [
+          el('button', { type: 'submit', className: 'btn btn-primary', text: 'Guardar key' }),
+          el('button', { type: 'button', className: 'btn btn-ghost', id: 'gemini-clear', text: 'Borrar' })
+        ])
+      ])
     ]),
     el('div', { className: 'notice notice-info' }, [
       el('p', { text: `Modelo activo: ${meta.modelId}` }),
-      el('p', { text: 'Se ejecuta en tu navegador (WebAssembly/WebGPU). Las fotos NO se envían a una API de IA de pago.' }),
+      el('p', { text: 'CLIP corre en tu navegador. Gemini solo se usa al agregar una foto si guardaste la key.' }),
       el('button', { type: 'button', className: 'btn btn-ghost', id: 'warmup', text: 'Precargar modelo' })
     ]),
     el('form', { id: 'thr-form', className: 'stack-form' }, [
@@ -254,10 +282,38 @@ export async function renderSettings(root) {
         el('button', { type: 'button', className: 'btn btn-ghost btn-block', id: 'ex-csv', text: 'Exportar CSV' }),
         el('label', { className: 'btn btn-ghost btn-block', html: 'Importar JSON/CSV<input type="file" accept=".json,.csv,text/csv,application/json" id="import-file" hidden>' })
       ]),
-      el('p', { className: 'muted', text: 'La importación crea piezas nuevas sin fotografías/embeddings. Puedes agregar fotos después.' })
+      el('p', { className: 'muted', text: 'La importación crea piezas nuevas sin fotografías/embeddings.' })
     ]),
     el('p', { className: 'muted', text: `Versión ${window.APP_CONFIG?.APP_VERSION || '1.0.0'}` })
   ]));
+
+  root.querySelector('#gemini-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const raw = new FormData(e.target).get('gemini_key');
+    const next = String(raw || '').trim();
+    if (!next && geminiSaved) {
+      toast('No cambió: sigue la key anterior. Usa Borrar para quitarla.', 'info');
+      return;
+    }
+    if (!next) {
+      toast('Pega una API key', 'error');
+      return;
+    }
+    try {
+      setGeminiApiKey(next);
+      toast('Gemini guardado en este dispositivo', 'ok');
+      navigate('settings', true);
+      location.reload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  root.querySelector('#gemini-clear').addEventListener('click', () => {
+    setGeminiApiKey('');
+    toast('Key eliminada de este iPhone', 'ok');
+    location.reload();
+  });
 
   root.querySelector('#warmup').addEventListener('click', async () => {
     try {

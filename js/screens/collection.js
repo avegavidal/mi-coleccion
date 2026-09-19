@@ -10,6 +10,7 @@ import {
   buildInstantMarket,
   saveManualMarketPrice
 } from '../services/marketPriceService.js';
+import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
 import { navigate } from '../utils/router.js';
 
 export async function renderCollection(root) {
@@ -84,7 +85,7 @@ export async function renderAdd(root, params = []) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Agregar pieza' }),
-      el('p', { className: 'page-sub', text: 'Foto → nombre → guardar. El resto después.' })
+      el('p', { className: 'page-sub', text: 'Toma la foto: intentamos rellenar el nombre solos.' })
     ]),
     el('form', { id: 'add-form', className: 'stack-form' }, [
       el('div', { className: 'photo-capture-block' }, [
@@ -96,9 +97,10 @@ export async function renderAdd(root, params = []) {
           el('label', { className: 'btn btn-ghost', html: 'Galería<input type="file" accept="image/*" id="gallery" hidden>' })
         ])
       ]),
+      el('p', { className: 'status-line muted', id: 'id-status', text: 'La foto se analiza al instante (OCR de caja; IA opcional).' }),
       el('label', {}, [
         el('span', { text: 'Nombre *' }),
-        el('input', { className: 'input', name: 'name', required: true, placeholder: 'Ej. Spider-Man #123' })
+        el('input', { className: 'input', name: 'name', required: true, placeholder: 'Se rellena al tomar la foto…', autocomplete: 'off' })
       ]),
       el('label', {}, [
         el('span', { text: 'Categoría' }),
@@ -107,12 +109,12 @@ export async function renderAdd(root, params = []) {
           ...collections.map((c) => el('option', { value: c.id, text: c.name }))
         ])
       ]),
-      el('details', { className: 'more-fields' }, [
+      el('details', { className: 'more-fields', id: 'more-fields' }, [
         el('summary', { text: 'Más detalles (opcional)' }),
         ...['manufacturer', 'franchise', 'series', 'item_number', 'character_name', 'category'].map((name) =>
           el('label', {}, [
             el('span', { text: labelFor(name) }),
-            el('input', { className: 'input', name })
+            el('input', { className: 'input', name, autocomplete: 'off' })
           ])
         ),
         el('label', {}, [
@@ -145,7 +147,35 @@ export async function renderAdd(root, params = []) {
   ]));
 
   let photoFile = null;
+  let identifySeq = 0;
   const preview = root.querySelector('#preview');
+  const form = root.querySelector('#add-form');
+  const idStatus = root.querySelector('#id-status');
+
+  const applySuggestion = (s) => {
+    if (!s) return;
+    const setIfEmpty = (name, value) => {
+      if (value == null || value === '') return;
+      const input = form.elements.namedItem(name);
+      if (!input) return;
+      if (!String(input.value || '').trim()) input.value = String(value);
+    };
+    if (s.name) {
+      const nameInput = form.elements.namedItem('name');
+      if (nameInput && !String(nameInput.value || '').trim()) nameInput.value = s.name;
+      else if (nameInput && s.confidence === 'high') nameInput.value = s.name;
+    }
+    setIfEmpty('manufacturer', s.manufacturer);
+    setIfEmpty('franchise', s.franchise);
+    setIfEmpty('series', s.series);
+    setIfEmpty('item_number', s.item_number);
+    setIfEmpty('character_name', s.character_name);
+    setIfEmpty('category', s.category);
+    setIfEmpty('year', s.year);
+    if (s.manufacturer || s.series || s.item_number || s.franchise) {
+      root.querySelector('#more-fields')?.setAttribute('open', '');
+    }
+  };
 
   const setPhoto = async (file) => {
     if (!file) return;
@@ -154,6 +184,31 @@ export async function renderAdd(root, params = []) {
     const img = el('img', { alt: 'Vista previa' });
     img.src = URL.createObjectURL(photoFile);
     preview.append(img);
+
+    const seq = ++identifySeq;
+    idStatus.textContent = 'Analizando foto…';
+    try {
+      const suggestion = await identifyFigureFromPhoto(photoFile, {
+        onProgress: (p) => {
+          if (seq !== identifySeq) return;
+          idStatus.textContent = p.message || p.stage;
+        }
+      });
+      if (seq !== identifySeq) return;
+      applySuggestion(suggestion);
+      if (suggestion.name) {
+        idStatus.textContent = suggestion.source === 'gemini'
+          ? `Detectado (IA): ${suggestion.name}`
+          : `Texto leído: ${suggestion.name}${suggestion.manufacturer ? ` · ${suggestion.manufacturer}` : ''}`;
+        toast('Campos rellenados desde la foto — revisa y guarda', 'ok');
+      } else {
+        idStatus.textContent = suggestion.note
+          || 'No se pudo leer el nombre. Escribe uno o usa foto de la caja.';
+      }
+    } catch (err) {
+      if (seq !== identifySeq) return;
+      idStatus.textContent = err.message || 'No se pudo analizar la foto';
+    }
   };
 
   root.querySelector('#cam').addEventListener('change', (e) => setPhoto(e.target.files?.[0]));
@@ -247,12 +302,12 @@ export async function renderItemDetail(root, params) {
     el('section', { className: 'market-panel', id: 'market-panel' }, [
       el('div', { className: 'market-panel-head' }, [
         el('h2', { text: 'Precio de mercado' }),
-        el('p', { className: 'page-sub', text: 'Enlaces listos al instante · eBay US · Japón' })
+        el('p', { className: 'page-sub', text: 'Foto / Lens · Amazon US/JP · eBay · Japón' })
       ]),
       el('div', { id: 'market-body', className: 'market-body' }),
       el('div', { className: 'market-actions' }, [
         el('label', { className: 'market-manual' }, [
-          el('span', { text: 'Guarda la mediana que viste en eBay vendidos (USD)' }),
+          el('span', { text: 'Guarda la mediana que viste (USD)' }),
           el('div', { className: 'market-manual-row' }, [
             el('input', {
               className: 'input',
@@ -276,8 +331,15 @@ export async function renderItemDetail(root, params) {
   ]));
 
   const marketBody = root.querySelector('#market-body');
-  // Instantáneo: sin scrape ni botón de consulta
-  paintMarketResult(marketBody, buildInstantMarket(item), item);
+  const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
+  const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
+    const ia = preferTypes.indexOf(a.image_type);
+    const ib = preferTypes.indexOf(b.image_type);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  const photoPath = sortedImgs[0]?.storage_path;
+  const imageUrl = photoPath ? (urls[photoPath] || null) : null;
+  paintMarketResult(marketBody, buildInstantMarket(item, { imageUrl }), item);
 
   root.querySelector('#market-save-manual').addEventListener('click', async () => {
     const raw = root.querySelector('#market-manual-price')?.value;

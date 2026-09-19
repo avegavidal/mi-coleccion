@@ -301,16 +301,32 @@ test('classifyDeal marca caro sobre la mediana', () => {
   assert(d.code === 'expensive' || d.code === 'high', d.code);
 });
 
-test('enlaces US/JP incluyen eBay vendidos y Yahoo JP', () => {
+test('enlaces US/JP incluyen eBay, Amazon y Yahoo JP', () => {
   const links = ebayLinks.buildMarketLinks('figma goku');
   const ids = links.map((l) => l.id);
   assert(ids.includes('ebay-sold'));
   assert(ids.includes('ebay-active'));
+  assert(ids.includes('amazon-us'));
+  assert(ids.includes('amazon-jp'));
   assert(ids.includes('yahoo-jp'));
   assert(ids.includes('mercari-jp'));
   assert(ids.includes('amiami'));
   assert(ids.includes('mandarake'));
   assert(!ids.some((id) => id.includes('mercado') || id.includes('ml')), 'sin Mercado Libre');
+});
+
+test('enlaces visuales con imageUrl', () => {
+  const links = ebayLinks.buildMarketLinks('test', { imageUrl: 'https://example.com/a.jpg' });
+  const ids = links.map((l) => l.id);
+  assert(ids.includes('google-lens'));
+  assert(ids.includes('bing-visual'));
+});
+
+test('OCR suggestionFromOcrText detecta marca y nombre', async () => {
+  const vis = await import(pathToFileURL(join(root, 'js/services/visionIdentifyService.js')).href);
+  const s = vis.suggestionFromOcrText('Good Smile Company\nNendoroid Link\nNo. 563');
+  assert(s.manufacturer && /good smile/i.test(s.manufacturer));
+  assert(s.name || s.item_number);
 });
 
 test('extractEbayPrices lee montos del HTML', () => {

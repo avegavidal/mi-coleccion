@@ -22,9 +22,13 @@ window.APP_CONFIG = {
   STORAGE_BUCKET: 'item-photos',
 
   APP_NAME: 'Mi Colección',
-  APP_VERSION: '1.0.0',
+  APP_VERSION: '1.1.3',
 
-  // Mercados de referencia (sin Mercado Libre):
-  // US = eBay + Mercari US | JP = Yahoo Auctions + Mercari JP + AmiAmi + Mandarake + HLJ
-  MARKET_REGIONS: 'US,JP'
+  // Mercados: US / JP (+ VIS = Google Lens / Bing por foto)
+  MARKET_REGIONS: 'US,JP,VIS',
+
+  // Identificación por foto (Agregar pieza). Gratis en Google AI Studio:
+  // https://aistudio.google.com/apikey
+  // Restringe la key por referrer a tu GitHub Pages. Vacío = solo OCR de caja.
+  GEMINI_API_KEY: ''
 };

@@ -16,8 +16,11 @@ window.APP_CONFIG = {
   STORAGE_BUCKET: 'item-photos',
 
   APP_NAME: 'Mi Colección',
-  APP_VERSION: '1.1.2',
+  APP_VERSION: '1.2.0',
 
-  // Mercados: US (eBay, Mercari US) y/o JP (Yahoo Auctions, Mercari JP, AmiAmi, Mandarake, HLJ)
-  MARKET_REGIONS: 'US,JP'
+  // Mercados: US / JP (+ VIS para Lens si hay foto)
+  MARKET_REGIONS: 'US,JP,VIS',
+
+  // Dejar vacío en el repo. Guarda la key en Configuración (queda en tu iPhone).
+  GEMINI_API_KEY: ''
 };

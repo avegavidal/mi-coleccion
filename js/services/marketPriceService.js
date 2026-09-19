@@ -136,18 +136,25 @@ export function classifyDeal(purchasePrice, marketMedian) {
 }
 
 function filterLinks(links) {
-  const mode = (cfg().MARKET_REGIONS || 'US,JP').toUpperCase();
+  const mode = (cfg().MARKET_REGIONS || 'US,JP,VIS').toUpperCase();
   const wantUs = mode.includes('US');
   const wantJp = mode.includes('JP');
-  return links.filter((l) => (l.region === 'US' && wantUs) || (l.region === 'JP' && wantJp));
+  const wantVis = mode.includes('VIS') || true; // visual siempre útil
+  return links.filter((l) =>
+    (l.region === 'US' && wantUs)
+    || (l.region === 'JP' && wantJp)
+    || (l.region === 'VIS' && wantVis)
+  );
 }
 
 /**
  * @param {object} item
+ * @param {{ imageUrl?: string|null }} [opts]
  */
-export function cachedMarketFromItem(item) {
+export function cachedMarketFromItem(item, opts = {}) {
   if (!item || item.market_price_median == null) return null;
   const query = item.market_query || buildMarketQuery(item);
+  const imageUrl = opts.imageUrl || null;
   return {
     source: item.market_source || 'cache',
     label: item.market_source === 'manual' ? 'Estimado manual' : 'Última consulta',
@@ -157,27 +164,30 @@ export function cachedMarketFromItem(item) {
     median: Number(item.market_price_median),
     high: item.market_price_high != null ? Number(item.market_price_high) : null,
     listings: [],
-    links: filterLinks(buildMarketLinks(query)),
+    links: filterLinks(buildMarketLinks(query, { imageUrl })),
     ebay: ebayMarketUrls(query),
     searchUrl: ebayMarketUrls(query).active,
     soldUrl: ebayMarketUrls(query).sold,
     query,
+    imageUrl,
     deal: classifyDeal(item.purchase_price, item.market_price_median),
     checkedAt: item.market_checked_at || null,
     fromCache: true,
-    note: 'Precio guardado en tu colección.'
+    note: 'Precio guardado. Usa Lens/foto si el nombre no encuentra nada.'
   };
 }
 
 /**
- * Snapshot instantáneo: caché + enlaces (sin scrape lento).
+ * Snapshot instantáneo: foto (Lens) + texto amplio + Amazon US/JP.
  * @param {object} item
+ * @param {{ imageUrl?: string|null }} [opts]
  */
-export function buildInstantMarket(item) {
+export function buildInstantMarket(item, opts = {}) {
   const query = buildMarketQuery(item);
+  const imageUrl = opts.imageUrl || null;
   const ebay = ebayMarketUrls(query);
-  const links = filterLinks(buildMarketLinks(query));
-  const cached = cachedMarketFromItem(item);
+  const links = filterLinks(buildMarketLinks(query, { imageUrl }));
+  const cached = cachedMarketFromItem(item, { imageUrl });
 
   if (cached) {
     return {
@@ -187,12 +197,14 @@ export function buildInstantMarket(item) {
       searchUrl: ebay.active,
       soldUrl: ebay.sold,
       query: cached.query || query,
+      imageUrl,
       instant: true
     };
   }
 
   return {
     query,
+    imageUrl,
     source: 'market-links',
     label: 'Mercados US / JP',
     currency: item?.currency || 'USD',
@@ -205,7 +217,9 @@ export function buildInstantMarket(item) {
     soldUrl: ebay.sold,
     links,
     ebay,
-    note: 'Toca eBay vendidos, mira precios reales y guarda la mediana abajo.',
+    note: imageUrl
+      ? 'Empieza por Google Lens (foto). Luego eBay vendidos / Amazon para anclar el precio.'
+      : 'Sin foto firmada: añade una imagen a la pieza para buscar por foto. Mientras, usa texto amplio.',
     deal: classifyDeal(item?.purchase_price, null),
     checkedAt: new Date().toISOString(),
     instant: true
