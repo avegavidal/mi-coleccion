@@ -55,7 +55,7 @@ export async function listItems(filters = {}) {
   if (filters.search) {
     const s = filters.search.trim();
     query = query.or(
-      `name.ilike.%${s}%,manufacturer.ilike.%${s}%,franchise.ilike.%${s}%,series.ilike.%${s}%,character.ilike.%${s}%,item_number.ilike.%${s}%,category.ilike.%${s}%`
+      `name.ilike.%${s}%,manufacturer.ilike.%${s}%,franchise.ilike.%${s}%,series.ilike.%${s}%,character_name.ilike.%${s}%,item_number.ilike.%${s}%,category.ilike.%${s}%`
     );
   }
 
@@ -108,7 +108,7 @@ export async function createItem(payload) {
     franchise: payload.franchise || null,
     series: payload.series || null,
     item_number: payload.item_number || null,
-    character: payload.character || null,
+    character_name: payload.character || payload.character_name || null,
     category: payload.category || null,
     year: payload.year ? Number(payload.year) : null,
     condition: payload.condition || null,

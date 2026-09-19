@@ -49,7 +49,7 @@ export function groupMatchesByItem(rows) {
         franchise: row.franchise,
         series: row.series,
         itemNumber: row.item_number,
-        character: row.character,
+        character: row.character_name,
         category: row.category,
         quantity: row.quantity,
         collectionId: row.collection_id,

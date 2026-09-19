@@ -26,7 +26,7 @@ export async function exportCollectionCSV() {
   const items = await listItems();
   const headers = [
     'id', 'name', 'manufacturer', 'franchise', 'series', 'item_number',
-    'character', 'category', 'year', 'condition', 'quantity',
+    'character_name', 'category', 'year', 'condition', 'quantity',
     'purchase_price', 'currency', 'acquisition_date', 'notes',
     'collection_name', 'created_at'
   ];
@@ -39,7 +39,7 @@ export async function exportCollectionCSV() {
       i.franchise,
       i.series,
       i.item_number,
-      i.character,
+      i.character_name,
       i.category,
       i.year,
       i.condition,
@@ -134,7 +134,7 @@ export async function importCollectionJSON(text) {
       franchise: item.franchise,
       series: item.series,
       item_number: item.item_number,
-      character: item.character,
+      character_name: item.character_name || item.character,
       category: item.category,
       year: item.year,
       condition: item.condition,
@@ -173,7 +173,7 @@ export async function importCollectionCSV(text) {
       franchise: row.franchise || null,
       series: row.series || null,
       item_number: row.item_number || null,
-      character: row.character || null,
+      character_name: row.character_name || row.character || null,
       category: row.category || null,
       year: row.year || null,
       condition: row.condition || null,

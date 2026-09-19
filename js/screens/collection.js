@@ -97,7 +97,7 @@ export async function renderAdd(root, params = []) {
       ]),
       el('details', { className: 'more-fields' }, [
         el('summary', { text: 'Más detalles (opcional)' }),
-        ...['manufacturer', 'franchise', 'series', 'item_number', 'character', 'category'].map((name) =>
+        ...['manufacturer', 'franchise', 'series', 'item_number', 'character_name', 'category'].map((name) =>
           el('label', {}, [
             el('span', { text: labelFor(name) }),
             el('input', { className: 'input', name })
@@ -167,7 +167,7 @@ export async function renderAdd(root, params = []) {
         franchise: fd.get('franchise'),
         series: fd.get('series'),
         item_number: fd.get('item_number'),
-        character: fd.get('character'),
+        character_name: fd.get('character_name'),
         category: fd.get('category'),
         year: fd.get('year'),
         quantity: fd.get('quantity') || 1,
@@ -201,6 +201,7 @@ function labelFor(name) {
     series: 'Serie',
     item_number: 'Número',
     character: 'Personaje',
+    character_name: 'Personaje',
     category: 'Categoría'
   })[name] || name;
 }
@@ -294,7 +295,7 @@ export async function renderEdit(root, params) {
           ...collections.map((c) => el('option', { value: c.id, text: c.name, ...(c.id === item.collection_id ? { selected: true } : {}) }))
         ])
       ]),
-      ...['manufacturer', 'franchise', 'series', 'item_number', 'character', 'category'].map((name) =>
+      ...['manufacturer', 'franchise', 'series', 'item_number', 'character_name', 'category'].map((name) =>
         el('label', {}, [
           el('span', { text: labelFor(name) }),
           el('input', { className: 'input', name, value: item[name] || '' })
