@@ -1,11 +1,6 @@
-/* Service Worker — cache básico de interfaz (no datos privados de colección) */
-const CACHE = 'mi-coleccion-v3';
+/* Service Worker — network-first para HTML/JS/CSS (evita UI vieja en iPhone) */
+const CACHE = 'mi-coleccion-v4';
 const PRECACHE = [
-  './',
-  './index.html',
-  './css/styles.css',
-  './js/config.js',
-  './js/app.js',
   './manifest.json',
   './assets/icons/icon-192.png'
 ];
@@ -24,19 +19,49 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isAppShell(url) {
+  if (url.origin !== self.location.origin) return false;
+  const p = url.pathname;
+  return (
+    p.endsWith('.js') ||
+    p.endsWith('.css') ||
+    p.endsWith('.html') ||
+    p.endsWith('/') ||
+    /\/mi-coleccion\/?$/.test(p)
+  );
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
 
-  // No cachear APIs, storage firmado ni modelos HF (demasiado grandes / privados)
   if (
     url.hostname.includes('supabase.co') ||
     url.hostname.includes('huggingface.co') ||
     url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('gstatic.com') ||
+    url.hostname.includes('ebay.com') ||
+    url.hostname.includes('mercadolibre') ||
     url.pathname.includes('match_item_images')
   ) {
+    return;
+  }
+
+  // App shell: siempre red primero (así ves Google / Face ID / mercado nuevo)
+  if (isAppShell(url)) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
     return;
   }
 

@@ -8,7 +8,8 @@ export async function renderLogin(root) {
       el('div', { className: 'auth-brand' }, [
         el('div', { className: 'logo-mark', text: 'MC' }),
         el('h1', { text: 'Mi Colección' }),
-        el('p', { className: 'auth-sub', text: 'Acceso privado. Google, Face ID o email.' })
+        el('p', { className: 'auth-sub', text: 'Acceso privado. Google, Face ID o email.' }),
+        el('p', { className: 'muted small', text: `v${window.APP_CONFIG?.APP_VERSION || ''}` })
       ]),
       el('div', { className: 'auth-sso' }, [
         el('button', {
