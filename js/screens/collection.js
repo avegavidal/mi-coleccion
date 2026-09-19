@@ -10,7 +10,8 @@ import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from 
 import {
   buildInstantMarket,
   lookupMarketPrice,
-  saveManualMarketPrice
+  saveManualMarketPrice,
+  classifyDeal
 } from '../services/marketPriceService.js';
 import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
 import { navigate } from '../utils/router.js';
@@ -349,9 +350,10 @@ export async function renderItemDetail(root, params) {
   /** @type {object|null} */
   let lastMarketResult = null;
 
-  const applyChosenMatch = async (match, allMatches) => {
+  const applyChosenMatch = async (match, allMatches, btn = null) => {
     try {
-      setBusy(true);
+      setBusy(btn, true, 'Guardando…');
+      if (marketStatus) marketStatus.textContent = 'Guardando precio…';
       const prices = (allMatches || []).map((m) => Number(m.price)).filter((n) => Number.isFinite(n) && n > 0);
       const saved = await saveManualMarketPrice(item, match.price, {
         low: prices.length ? Math.min(...prices) : match.price,
@@ -360,31 +362,30 @@ export async function renderItemDetail(root, params) {
         query: match.title || match.query || item.name,
         currency: match.currency || 'USD'
       });
-      Object.assign(item, {
-        market_price_median: saved.median,
-        market_price_low: saved.low,
-        market_price_high: saved.high,
-        market_currency: saved.currency,
-        market_source: match.source || 'auto',
-        market_checked_at: saved.checkedAt,
-        market_sample_size: saved.sampleSize,
-        market_query: saved.query
-      });
-      if (lastMarketResult) {
-        lastMarketResult.median = saved.median;
-        lastMarketResult.low = saved.low;
-        lastMarketResult.high = saved.high;
-        lastMarketResult.chosenId = match.id;
-      }
-      paintMarketResult(marketBody, lastMarketResult || buildInstantMarket(item, { imageUrl }), item, {
-        onChooseMatch: applyChosenMatch
-      });
-      paintMarketCandidates(marketActions, item, imageUrl, () => {});
+      item.market_price_median = saved.median;
+      item.market_price_low = saved.low;
+      item.market_price_high = saved.high;
+      item.market_currency = saved.currency;
+      item.market_source = match.source || 'auto';
+      item.market_checked_at = saved.checkedAt;
+      item.market_sample_size = saved.sampleSize;
+      item.market_query = saved.query;
+      const next = {
+        ...(lastMarketResult || buildInstantMarket(item, { imageUrl })),
+        median: saved.median,
+        low: saved.low,
+        high: saved.high,
+        chosenId: match.id,
+        deal: classifyDeal(item.purchase_price, saved.median)
+      };
+      refreshMarket(next);
+      if (marketStatus) marketStatus.textContent = 'Precio ideal guardado';
       toast('Precio ideal guardado', 'ok');
     } catch (err) {
       toast(err.message, 'error');
+      if (marketStatus) marketStatus.textContent = err.message || 'No se pudo guardar';
     } finally {
-      setBusy(false);
+      setBusy(btn, false);
     }
   };
 
@@ -641,7 +642,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
               type: 'button',
               className: chosen ? 'btn btn-primary' : 'btn btn-ghost',
               text: chosen ? '✓ Ideal' : (matches.length > 1 ? 'Usar este' : 'Guardar'),
-              onClick: () => hooks.onChooseMatch(match, matches)
+              onClick: (e) => hooks.onChooseMatch(match, matches, e.currentTarget)
             })
             : null
         ])
@@ -884,9 +885,10 @@ function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
           type: 'button',
           className: isChosen ? 'btn btn-primary' : 'btn btn-ghost',
           text: isChosen ? '✓ Ideal' : 'Usar este',
-          onClick: async () => {
+          onClick: async (e) => {
+            const btn = e.currentTarget;
             try {
-              setBusy(true);
+              setBusy(btn, true, 'Guardando…');
               const prices = candidates.map((c) => c.price);
               const saved = await saveManualMarketPrice(item, cand.price, {
                 low: Math.min(...prices),
@@ -896,22 +898,20 @@ function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
                 currency: 'USD'
               });
               for (const c of candidates) c.chosen = c.id === cand.id;
-              Object.assign(item, {
-                market_price_median: saved.median,
-                market_price_low: saved.low,
-                market_price_high: saved.high,
-                market_currency: saved.currency,
-                market_source: 'manual',
-                market_checked_at: saved.checkedAt,
-                market_sample_size: saved.sampleSize,
-                market_query: saved.query
-              });
+              item.market_price_median = saved.median;
+              item.market_price_low = saved.low;
+              item.market_price_high = saved.high;
+              item.market_currency = saved.currency;
+              item.market_source = 'manual';
+              item.market_checked_at = saved.checkedAt;
+              item.market_sample_size = saved.sampleSize;
+              item.market_query = saved.query;
               refreshMarket();
               toast('Precio ideal guardado', 'ok');
             } catch (err) {
               toast(err.message, 'error');
             } finally {
-              setBusy(false);
+              setBusy(btn, false);
             }
           }
         }),

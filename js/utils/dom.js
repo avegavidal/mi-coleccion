@@ -130,7 +130,7 @@ export function compressImage(file, maxSide = 1280, quality = 0.85) {
 }
 
 export function setBusy(button, busy, label) {
-  if (!button) return;
+  if (!button || typeof button !== 'object' || !('disabled' in button)) return;
   if (busy) {
     button.dataset.prevText = button.textContent;
     button.disabled = true;
