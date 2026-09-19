@@ -92,7 +92,7 @@ export async function renderStats(root) {
       el('p', { className: 'page-sub', text: 'Resumen de tu colección.' })
     ]),
     el('div', { className: 'stat-card highlight', id: 'value-card' }),
-    el('section', { className: 'section' }, [el('h2', { text: 'Por colección' }), el('div', { id: 'chart-col', className: 'chart' })]),
+    el('section', { className: 'section' }, [el('h2', { text: 'Por categoría' }), el('div', { id: 'chart-col', className: 'chart' })]),
     el('section', { className: 'section' }, [el('h2', { text: 'Por marca' }), el('div', { id: 'chart-man', className: 'chart' })]),
     el('section', { className: 'section' }, [el('h2', { text: 'Por año' }), el('div', { id: 'chart-year', className: 'chart' })]),
     el('section', { className: 'section' }, [el('h2', { text: 'Agregadas por mes' }), el('div', { id: 'chart-month', className: 'chart' })]),

@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS public.items (
   currency TEXT DEFAULT 'USD',
   acquisition_date DATE,
   notes TEXT,
+  -- Cache de precio de mercado (eBay US / estimado manual)
+  market_price_low NUMERIC(12, 2),
+  market_price_median NUMERIC(12, 2),
+  market_price_high NUMERIC(12, 2),
+  market_sample_size INTEGER,
+  market_currency TEXT,
+  market_source TEXT,
+  market_query TEXT,
+  market_checked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -475,6 +484,18 @@ CREATE POLICY "item_photos_delete_own" ON storage.objects
     bucket_id = 'item-photos'
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
+
+-- =============================================================================
+-- Migración opcional: columnas de precio de mercado (si ya tenías el schema)
+-- =============================================================================
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_price_low NUMERIC(12, 2);
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_price_median NUMERIC(12, 2);
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_price_high NUMERIC(12, 2);
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_sample_size INTEGER;
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_currency TEXT;
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_source TEXT;
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_query TEXT;
+ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_checked_at TIMESTAMPTZ;
 
 -- =============================================================================
 -- FIN DEL ESQUEMA

@@ -11,7 +11,39 @@ export async function listCollections() {
   return data || [];
 }
 
-export async function createCollection(name, description = null, color = '#C4A574') {
+export async function getCollection(id) {
+  const { data, error } = await supabase
+    .from('collections')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Categorías con conteo y rutas de fotos para mosaico.
+ */
+export async function listCollectionsWithStats() {
+  const [collections, items] = await Promise.all([listCollections(), listItems()]);
+  return collections.map((c) => {
+    const members = items.filter((i) => i.collection_id === c.id);
+    const thumbs = [];
+    for (const item of members) {
+      const img = (item.item_images || [])[0];
+      if (img?.storage_path) thumbs.push(img.storage_path);
+      if (thumbs.length >= 4) break;
+    }
+    return {
+      ...c,
+      itemCount: members.length,
+      previewPaths: thumbs,
+      items: members
+    };
+  });
+}
+
+export async function createCollection(name, description = null, color = '#0f766e') {
   const user = await getUser();
   const { data, error } = await supabase
     .from('collections')

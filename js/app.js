@@ -4,8 +4,9 @@ import { renderLogin, renderRecover } from './screens/auth.js';
 import { renderDashboard } from './screens/dashboard.js';
 import {
   renderCollection, renderAdd, renderItemDetail, renderEdit,
-  renderCollectionsManage, renderDuplicates
+  renderDuplicates
 } from './screens/collection.js';
+import { renderCollectionsManage, renderCategoryDetail } from './screens/categories.js';
 import { renderIdentify, renderCompare } from './screens/identify.js';
 import { renderWishlist, renderStats, renderAccount, renderSettings } from './screens/wishlist.js';
 
@@ -17,6 +18,7 @@ defineRoute('add', renderAdd);
 defineRoute('item', renderItemDetail);
 defineRoute('edit', renderEdit);
 defineRoute('collections', renderCollectionsManage);
+defineRoute('category', renderCategoryDetail);
 defineRoute('duplicates', renderDuplicates);
 defineRoute('identify', renderIdentify);
 defineRoute('compare', renderCompare);
@@ -43,7 +45,7 @@ function updateChrome(routeName, isAuthed) {
 
   document.querySelectorAll('#bottom-nav a').forEach((a) => {
     const r = a.dataset.route;
-    a.classList.toggle('active', r === routeName || (routeName === 'item' && r === 'collection') || (routeName === 'compare' && r === 'identify'));
+    a.classList.toggle('active', r === routeName || (routeName === 'item' && r === 'collection') || (routeName === 'compare' && r === 'identify') || ((routeName === 'collections' || routeName === 'category') && r === 'collection'));
   });
 
   if (offline) {

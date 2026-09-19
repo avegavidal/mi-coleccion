@@ -6,7 +6,7 @@ export async function renderDashboard(root) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Inicio' }),
-      el('p', { className: 'page-sub', text: 'Tu colección al alcance de un toque.' })
+      el('p', { className: 'page-sub', text: 'Tu vitrina, fotos y mercado en un solo lugar.' })
     ]),
     el('a', { href: '#/identify', className: 'identify-hero-btn' }, [
       el('span', { className: 'identify-icon', text: '📷' }),
@@ -34,7 +34,7 @@ export async function renderDashboard(root) {
     const cards = [
       { label: 'Piezas', value: stats.totalPieces, href: '#/collection' },
       { label: 'Registros', value: stats.totalItems, href: '#/collection' },
-      { label: 'Colecciones', value: stats.totalCollections, href: '#/collections' },
+      { label: 'Categorías', value: stats.totalCollections, href: '#/collections' },
       { label: 'Duplicados', value: stats.duplicatesCount, href: '#/duplicates' },
       { label: 'Wishlist', value: stats.wishlistCount, href: '#/wishlist' }
     ];
@@ -84,7 +84,8 @@ export function itemCard(item) {
     el('p', { className: 'qty-badge', text: `×${item.quantity || 1}` }),
     el('div', { className: 'item-card-body' }, [
       el('h3', { text: item.name }),
-      el('p', { className: 'muted', text: item.collections?.name || 'Sin colección' })
+      el('p', { className: 'muted', text: item.collections?.name || 'Sin categoría' }),
+      item.manufacturer ? el('p', { className: 'card-meta', text: item.manufacturer }) : null
     ])
   ]);
 }

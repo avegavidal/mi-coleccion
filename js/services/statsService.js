@@ -15,7 +15,7 @@ export async function getStatsData() {
   let duplicates = 0;
 
   for (const i of list) {
-    const cName = i.collections?.name || 'Sin colección';
+    const cName = i.collections?.name || 'Sin categoría';
     byCollection[cName] = (byCollection[cName] || 0) + (i.quantity || 1);
 
     const m = i.manufacturer || 'Sin marca';

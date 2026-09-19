@@ -2,10 +2,16 @@ import { el, emptyState, toast, setBusy, compressImage, imageTypeLabel, formatMo
 import { itemCard } from './dashboard.js';
 import {
   listItems, listCollections, createItem, getItem, updateItem,
-  deleteItem, incrementQuantity, createCollection, getDuplicateItems
+  deleteItem, incrementQuantity, getDuplicateItems
 } from '../services/collectionService.js';
 import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from '../services/imageService.js';
+import {
+  buildMarketQuery,
+  cachedMarketFromItem,
+  lookupMarketPrice,
+  saveManualMarketPrice
+} from '../services/marketPriceService.js';
 import { navigate } from '../utils/router.js';
 
 export async function renderCollection(root) {
@@ -15,11 +21,14 @@ export async function renderCollection(root) {
         el('h1', { text: 'Mi colección' }),
         el('p', { className: 'page-sub', text: 'Busca, filtra y organiza.' })
       ]),
-      el('a', { href: '#/add', className: 'btn btn-primary btn-round', text: '+' })
+      el('div', { className: 'btn-row' }, [
+        el('a', { href: '#/collections', className: 'btn btn-ghost btn-round', text: '▣' }),
+        el('a', { href: '#/add', className: 'btn btn-primary btn-round', text: '+' })
+      ])
     ]),
     el('div', { className: 'filters' }, [
       el('input', { type: 'search', id: 'q', placeholder: 'Buscar nombre, marca, serie…', className: 'input' }),
-      el('select', { id: 'filter-collection', className: 'input' }, [el('option', { value: '', text: 'Todas las colecciones' })]),
+      el('select', { id: 'filter-collection', className: 'input' }, [el('option', { value: '', text: 'Todas las categorías' })]),
       el('select', { id: 'sort', className: 'input' }, [
         el('option', { value: 'recent', text: 'Más recientes' }),
         el('option', { value: 'name', text: 'Nombre' }),
@@ -89,9 +98,9 @@ export async function renderAdd(root, params = []) {
         el('input', { className: 'input', name: 'name', required: true, placeholder: 'Ej. Spider-Man #123' })
       ]),
       el('label', {}, [
-        el('span', { text: 'Colección' }),
+        el('span', { text: 'Categoría' }),
         el('select', { className: 'input', name: 'collection_id' }, [
-          el('option', { value: '', text: 'Sin colección' }),
+          el('option', { value: '', text: 'Sin categoría' }),
           ...collections.map((c) => el('option', { value: c.id, text: c.name }))
         ])
       ]),
@@ -232,12 +241,83 @@ export async function renderItemDetail(root, params) {
       item.purchase_price != null ? el('div', { className: 'meta-chip', text: formatMoney(item.purchase_price, item.currency) }) : null
     ]),
     item.notes ? el('p', { className: 'notes-block', text: item.notes }) : null,
+    el('section', { className: 'market-panel', id: 'market-panel' }, [
+      el('div', { className: 'market-panel-head' }, [
+        el('h2', { text: 'Precio de mercado' }),
+        el('p', { className: 'page-sub', text: 'eBay US · Mercari · Yahoo Auctions JP · AmiAmi · Mandarake' })
+      ]),
+      el('div', { id: 'market-body', className: 'market-body' }, [
+        el('p', { className: 'muted', text: 'Consulta anuncios US/JP y compara con lo que pagaste.' })
+      ]),
+      el('div', { className: 'market-actions' }, [
+        el('button', { type: 'button', className: 'btn btn-primary btn-block', id: 'market-refresh', text: 'Consultar mercado' }),
+        el('label', { className: 'market-manual' }, [
+          el('span', { text: 'O guarda un estimado (USD) tras ver vendidos' }),
+          el('div', { className: 'market-manual-row' }, [
+            el('input', {
+              className: 'input',
+              id: 'market-manual-price',
+              type: 'number',
+              step: '0.01',
+              min: '0',
+              placeholder: 'Ej. 45.00',
+              value: item.market_price_median ?? ''
+            }),
+            el('button', { type: 'button', className: 'btn btn-ghost', id: 'market-save-manual', text: 'Guardar' })
+          ])
+        ])
+      ])
+    ]),
     el('div', { className: 'btn-stack' }, [
       el('a', { href: `#/edit/${item.id}`, className: 'btn btn-primary btn-block', text: 'Editar' }),
       el('button', { type: 'button', className: 'btn btn-ghost btn-block', id: 'add-unit', text: '+ Agregar otra unidad' }),
       el('button', { type: 'button', className: 'btn btn-danger btn-block', id: 'delete-item', text: 'Eliminar pieza' })
     ])
   ]));
+
+  const marketBody = root.querySelector('#market-body');
+  const cached = cachedMarketFromItem(item);
+  if (cached) paintMarketResult(marketBody, cached, item);
+  else {
+    marketBody.innerHTML = '';
+    const q = buildMarketQuery(item);
+    marketBody.append(
+      el('p', { className: 'muted', text: q ? `Buscará: “${q}”` : 'Añade nombre / fabricante para buscar mejor.' })
+    );
+  }
+
+  root.querySelector('#market-refresh').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    setBusy(btn, true, 'Consultando…');
+    try {
+      const result = await lookupMarketPrice(item, { persist: true });
+      paintMarketResult(marketBody, result, item);
+      toast(result.median != null ? 'Mercado actualizado' : 'Enlaces listos — abre vendidos en eBay', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  root.querySelector('#market-save-manual').addEventListener('click', async () => {
+    const raw = root.querySelector('#market-manual-price')?.value;
+    try {
+      const saved = await saveManualMarketPrice(item, raw);
+      Object.assign(item, {
+        market_price_median: saved.median,
+        market_price_low: saved.low,
+        market_price_high: saved.high,
+        market_currency: saved.currency,
+        market_source: 'manual',
+        market_checked_at: saved.checkedAt
+      });
+      paintMarketResult(marketBody, saved, item);
+      toast('Estimado de mercado guardado', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
 
   const gallery = root.querySelector('#gallery');
   if (!item.item_images?.length) {
@@ -289,9 +369,9 @@ export async function renderEdit(root, params) {
     el('form', { id: 'edit-form', className: 'stack-form' }, [
       el('label', {}, [el('span', { text: 'Nombre' }), el('input', { className: 'input', name: 'name', value: item.name, required: true })]),
       el('label', {}, [
-        el('span', { text: 'Colección' }),
+        el('span', { text: 'Categoría' }),
         el('select', { className: 'input', name: 'collection_id' }, [
-          el('option', { value: '', text: 'Sin colección' }),
+          el('option', { value: '', text: 'Sin categoría' }),
           ...collections.map((c) => el('option', { value: c.id, text: c.name, ...(c.id === item.collection_id ? { selected: true } : {}) }))
         ])
       ]),
@@ -390,41 +470,6 @@ export async function renderEdit(root, params) {
   });
 }
 
-export async function renderCollectionsManage(root) {
-  const collections = await listCollections();
-  root.append(el('div', { className: 'page' }, [
-    el('header', { className: 'page-header' }, [
-      el('h1', { text: 'Colecciones' }),
-      el('p', { className: 'page-sub', text: 'Organiza como quieras. No hay límites fijos.' })
-    ]),
-    el('form', { id: 'new-col', className: 'inline-form' }, [
-      el('input', { className: 'input', name: 'name', placeholder: 'Nueva colección', required: true }),
-      el('button', { className: 'btn btn-primary', type: 'submit', text: 'Crear' })
-    ]),
-    el('ul', { className: 'list-plain', id: 'col-list' })
-  ]));
-
-  const list = root.querySelector('#col-list');
-  for (const c of collections) {
-    list.append(el('li', { className: 'list-row' }, [
-      el('span', { text: c.name }),
-      el('a', { href: `#/collection?c=${c.id}`, className: 'link', text: 'Ver' })
-    ]));
-  }
-
-  root.querySelector('#new-col').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = new FormData(e.target).get('name');
-    try {
-      await createCollection(name);
-      toast('Colección creada', 'ok');
-      location.reload();
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
 export async function renderDuplicates(root) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
@@ -442,4 +487,98 @@ export async function renderDuplicates(root) {
     return;
   }
   for (const item of withThumbs) grid.append(itemCard(item));
+}
+
+/**
+ * @param {HTMLElement} host
+ * @param {object} result
+ * @param {object} item
+ */
+function paintMarketResult(host, result, item) {
+  if (!host) return;
+  host.innerHTML = '';
+  const currency = result.currency || 'USD';
+  const deal = result.deal || {};
+
+  const stats = el('div', { className: 'market-stats' }, [
+    result.median != null
+      ? el('div', { className: 'market-stat main' }, [
+        el('span', { className: 'market-stat-label', text: 'Mediana' }),
+        el('strong', { text: formatMoney(result.median, currency) })
+      ])
+      : el('div', { className: 'market-stat main' }, [
+        el('span', { className: 'market-stat-label', text: 'Mediana' }),
+        el('strong', { text: '—' })
+      ]),
+    result.low != null
+      ? el('div', { className: 'market-stat' }, [
+        el('span', { className: 'market-stat-label', text: 'Desde' }),
+        el('strong', { text: formatMoney(result.low, currency) })
+      ])
+      : null,
+    result.high != null
+      ? el('div', { className: 'market-stat' }, [
+        el('span', { className: 'market-stat-label', text: 'Hasta' }),
+        el('strong', { text: formatMoney(result.high, currency) })
+      ])
+      : null
+  ]);
+
+  const dealEl = el('div', {
+    className: `market-deal deal-${deal.code || 'unknown'}`,
+  }, [
+    el('strong', { text: deal.label || 'Sin veredicto' }),
+    el('p', { text: deal.detail || '' }),
+    item?.purchase_price != null
+      ? el('p', {
+        className: 'muted small',
+        text: `Tu compra: ${formatMoney(item.purchase_price, item.currency || currency)}`
+      })
+      : null
+  ]);
+
+  host.append(stats, dealEl);
+
+  if (result.note) {
+    host.append(el('p', { className: 'muted small', text: result.note }));
+  }
+  if (result.query) {
+    host.append(el('p', { className: 'muted small', text: `Consulta: ${result.query}` }));
+  }
+  if (result.checkedAt) {
+    host.append(el('p', { className: 'muted small', text: `Actualizado: ${formatDate(result.checkedAt)}` }));
+  }
+
+  const links = result.links || [];
+  if (links.length) {
+    const list = el('div', { className: 'market-links' });
+    for (const link of links) {
+      list.append(
+        el('a', {
+          className: `market-link region-${link.region}`,
+          href: link.url,
+          target: '_blank',
+          rel: 'noopener noreferrer'
+        }, [
+          el('span', { className: 'market-link-region', text: link.region }),
+          el('span', { className: 'market-link-label', text: link.label }),
+          el('span', { className: 'market-link-hint', text: link.hint })
+        ])
+      );
+    }
+    host.append(list);
+  }
+
+  if (result.listings?.length) {
+    const ul = el('ul', { className: 'market-listings' });
+    for (const row of result.listings.slice(0, 6)) {
+      ul.append(
+        el('li', {}, [
+          el('span', { className: 'market-listing-title', text: row.title }),
+          el('strong', { text: formatMoney(row.price, row.currency || currency) })
+        ])
+      );
+    }
+    host.append(el('h3', { className: 'market-listings-title', text: 'Anuncios eBay (muestra)' }), ul);
+  }
 }

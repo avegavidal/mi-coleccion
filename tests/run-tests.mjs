@@ -150,9 +150,14 @@ const required = [
   'js/services/wishlistService.js',
   'js/services/exportService.js',
   'js/services/statsService.js',
+  'js/services/marketPriceService.js',
   'js/providers/LocalEmbeddingProvider.js',
   'js/providers/RemoteEmbeddingProvider.js',
   'js/providers/EmbeddingProvider.js',
+  'js/providers/MarketPriceProvider.js',
+  'js/providers/EbayLinkProvider.js',
+  'js/providers/EbayActiveProvider.js',
+  'js/screens/categories.js',
   'sql/schema.sql',
   'assets/icons/icon-192.png',
   'assets/icons/icon-512.png',
@@ -260,6 +265,69 @@ test('política conceptual storage path', () => {
   const pathA = `${userA}/item1/foto.jpg`;
   assert(sim.storagePathOwnedBy(pathA, userA));
   assert(!sim.storagePathOwnedBy(pathA, userB));
+});
+
+console.log('\n=== Precio de mercado US/JP ===');
+const market = await import(pathToFileURL(join(root, 'js/services/marketPriceService.js')).href);
+const ebayProv = await import(pathToFileURL(join(root, 'js/providers/EbayActiveProvider.js')).href);
+const ebayLinks = await import(pathToFileURL(join(root, 'js/providers/EbayLinkProvider.js')).href);
+
+test('buildMarketQuery prioriza fabricante + número + nombre', () => {
+  const q = market.buildMarketQuery({
+    manufacturer: 'Good Smile',
+    item_number: 'GSC-123',
+    name: 'Nendoroid Link',
+    franchise: 'Zelda'
+  });
+  assert(q.includes('Good Smile'));
+  assert(q.includes('GSC-123'));
+  assert(q.includes('Nendoroid Link'));
+});
+
+test('summarizePrices calcula mediana', () => {
+  const s = market.summarizePrices([10, 20, 30, 40, 1000]);
+  assert(s.count === 5);
+  assert(s.median != null);
+  assert(s.low <= s.median && s.median <= s.high);
+});
+
+test('classifyDeal marca buen precio bajo la mediana', () => {
+  const d = market.classifyDeal(30, 50);
+  assert(d.code === 'steal' || d.code === 'good', d.code);
+});
+
+test('classifyDeal marca caro sobre la mediana', () => {
+  const d = market.classifyDeal(80, 50);
+  assert(d.code === 'expensive' || d.code === 'high', d.code);
+});
+
+test('enlaces US/JP incluyen eBay vendidos y Yahoo JP', () => {
+  const links = ebayLinks.buildMarketLinks('figma goku');
+  const ids = links.map((l) => l.id);
+  assert(ids.includes('ebay-sold'));
+  assert(ids.includes('ebay-active'));
+  assert(ids.includes('yahoo-jp'));
+  assert(ids.includes('mercari-jp'));
+  assert(ids.includes('amiami'));
+  assert(ids.includes('mandarake'));
+  assert(!ids.some((id) => id.includes('mercado') || id.includes('ml')), 'sin Mercado Libre');
+});
+
+test('extractEbayPrices lee montos del HTML', () => {
+  const html = `
+    <span class="s-item__price">$24.99</span>
+    <span class="s-item__price">US $31.00</span>
+    <span class="s-item__price">$18.50</span>
+  `;
+  const prices = ebayProv.extractEbayPrices(html);
+  assert(prices.length >= 3, String(prices));
+  assert(prices.includes(24.99));
+});
+
+test('market service no usa Mercado Libre', () => {
+  const src = readFileSync(join(root, 'js/services/marketPriceService.js'), 'utf8');
+  assert(!/MercadoLibre|mercadolibre\.com/i.test(src));
+  assert(!existsSync(join(root, 'js/providers/MercadoLibreProvider.js')));
 });
 
 console.log(`\n==============================`);
