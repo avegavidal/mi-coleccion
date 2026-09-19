@@ -76,16 +76,16 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
 async function identifyWithGemini(file, apiKey) {
   const base64 = await blobToBase64(file);
   const mime = file.type || 'image/jpeg';
-  const prompt = `You identify collectible figures (anime, games, statues, Nendoroid, Figma, Hot Toys, Funko, etc.) from a photo.
+  const prompt = `You identify collectibles from a photo: anime/game figures OR trading cards (Pokemon, MTG, Yu-Gi-Oh, One Piece, Lorcana, etc.).
 Return ONLY valid JSON (no markdown) with keys:
-name (string, product title people would search),
+name (string, product title people would search — for cards include set/code if visible),
 manufacturer (string or null),
 franchise (string or null),
-series (string or null, e.g. Nendoroid / figma / SH Figuarts),
+series (string or null, e.g. Nendoroid / figma / Scarlet & Violet / Modern Horizons),
 character_name (string or null),
-item_number (string or null),
+item_number (string or null — collector number for cards),
 year (number or null),
-category (string or null),
+category (string or null — use "TCG" or "Carta" if it is a trading card),
 confidence ("high"|"medium"|"low").
 If unsure, still guess the best searchable product name. Prefer English or common romanization.`;
 

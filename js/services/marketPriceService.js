@@ -4,7 +4,8 @@ import {
   buildMarketLinks,
   buildShopLinksForQuery,
   buildVisualMarketLinks,
-  ebayMarketUrls
+  ebayMarketUrls,
+  isTcgCardItem
 } from '../providers/EbayLinkProvider.js';
 
 const cfg = () => globalThis.APP_CONFIG || globalThis.window?.APP_CONFIG || {};
@@ -250,13 +251,17 @@ export function buildInstantMarket(item, opts = {}) {
   const queries = buildLooseQueries(item);
   const query = queries[0] || '';
   const imageUrl = opts.imageUrl || null;
+  const tcg = isTcgCardItem(item);
   const visual = buildVisualMarketLinks(imageUrl);
-  const shopPrimary = query ? filterLinks(buildShopLinksForQuery(query)).slice(0, 6) : [];
+  const shopPrimary = query
+    ? filterLinks(buildShopLinksForQuery(query, { tcg })).slice(0, tcg ? 8 : 6)
+    : [];
+  const preferredIds = tcg
+    ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold']
+    : ['ebay-sold', 'amazon-us', 'amazon-jp', 'tcgplayer', 'cardmarket'];
   const queryGroups = queries.map((q) => ({
     query: q,
-    links: filterLinks(buildShopLinksForQuery(q)).filter((l) =>
-      ['ebay-sold', 'amazon-us', 'amazon-jp'].includes(l.id)
-    )
+    links: filterLinks(buildShopLinksForQuery(q, { tcg })).filter((l) => preferredIds.includes(l.id))
   }));
   const ebay = ebayMarketUrls(query);
   const cached = item?.market_price_median != null

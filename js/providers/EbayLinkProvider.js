@@ -1,6 +1,25 @@
 /**
  * Enlaces de mercado: foto primero, texto amplio (nunca título exacto largo).
+ * Incluye TCGPlayer + Cardmarket para cartas.
  */
+
+/**
+ * Detecta si la pieza parece una carta TCG.
+ * @param {object|string|null|undefined} itemOrText
+ */
+export function isTcgCardItem(itemOrText) {
+  const text = typeof itemOrText === 'string'
+    ? itemOrText
+    : [
+      itemOrText?.category,
+      itemOrText?.series,
+      itemOrText?.franchise,
+      itemOrText?.name,
+      itemOrText?.manufacturer,
+      itemOrText?.collections?.name
+    ].filter(Boolean).join(' ');
+  return /tcg|trading\s*card|carta|cards?|pokemon|pokémon|yu-?gi-?oh|magic:?\s*the\s*gathering|\bmtg\b|one\s*piece\s*card|digimon\s*card|lorcana|flesh\s*and\s*blood|\bfab\b|cardfight|vanguard|weiss|schwarz|battle\s*spirits|dragon\s*ball\s*(super\s*)?card|dbs\s*fw|union\s*arena/i.test(String(text || ''));
+}
 
 /**
  * @param {string|null|undefined} imageUrl
@@ -17,7 +36,7 @@ export function buildVisualMarketLinks(imageUrl) {
       kind: 'visual',
       primary: true,
       url: `https://lens.google.com/uploadbyurl?url=${imgEnc}`,
-      hint: 'Google Lens identifica la figura y muestra anuncios parecidos (eBay, Amazon, shops).'
+      hint: 'Google Lens identifica la figura/carta y muestra anuncios parecidos.'
     },
     {
       id: 'bing-visual',
@@ -32,17 +51,55 @@ export function buildVisualMarketLinks(imageUrl) {
 }
 
 /**
- * Unas pocas tiendas con una consulta AMPLIA (2–5 palabras).
+ * Enlaces TCG (cartas).
  * @param {string} query
  */
-export function buildShopLinksForQuery(query) {
+export function buildTcgShopLinks(query) {
+  const q = (query || '').trim();
+  if (!q) return [];
+  const enc = encodeURIComponent(q);
+  return [
+    {
+      id: 'tcgplayer',
+      region: 'US',
+      label: 'TCGPlayer',
+      kind: 'tcg',
+      url: `https://www.tcgplayer.com/search/all/product?q=${enc}&view=grid`,
+      hint: q
+    },
+    {
+      id: 'cardmarket',
+      region: 'US',
+      label: 'Cardmarket',
+      kind: 'tcg',
+      url: `https://www.cardmarket.com/en/Products/Search?searchString=${enc}`,
+      hint: q
+    },
+    {
+      id: 'pricecharting',
+      region: 'US',
+      label: 'PriceCharting',
+      kind: 'tcg',
+      url: `https://www.pricecharting.com/search-products?q=${enc}&type=priced`,
+      hint: q
+    }
+  ];
+}
+
+/**
+ * Unas pocas tiendas con una consulta AMPLIA (2–5 palabras).
+ * @param {string} query
+ * @param {{ tcg?: boolean }} [opts]
+ */
+export function buildShopLinksForQuery(query, opts = {}) {
   const q = (query || '').trim();
   if (!q) return [];
   const enc = encodeURIComponent(q);
   const encPlus = encodeURIComponent(q).replace(/%20/g, '+');
   const yahooQ = encodeURIComponent(q);
+  const tcgFirst = Boolean(opts.tcg);
 
-  return [
+  const figureShops = [
     {
       id: 'ebay-sold',
       region: 'US',
@@ -116,16 +173,21 @@ export function buildShopLinksForQuery(query) {
       hint: q
     }
   ];
+
+  const tcg = buildTcgShopLinks(q);
+  // Cartas: TCGPlayer + Cardmarket primero; figuras: tiendas normales + TCG al final (por si acaso)
+  return tcgFirst ? [...tcg, ...figureShops] : [...figureShops, ...tcg];
 }
 
 /**
  * @param {string} query
- * @param {{ imageUrl?: string|null }} [opts]
+ * @param {{ imageUrl?: string|null, tcg?: boolean, item?: object }} [opts]
  */
 export function buildMarketLinks(query, opts = {}) {
+  const tcg = opts.tcg != null ? opts.tcg : isTcgCardItem(opts.item || query);
   return [
     ...buildVisualMarketLinks(opts.imageUrl),
-    ...buildShopLinksForQuery(query)
+    ...buildShopLinksForQuery(query, { tcg })
   ];
 }
 

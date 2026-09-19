@@ -6,7 +6,7 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, buildTcgShopLinks } from './EbayLinkProvider.js';
 
 function readGeminiApiKey() {
   try {
@@ -136,6 +136,10 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     : (errors.length ? 'error' : 'empty');
 
   const primaryQuery = queries[0] || '';
+  const tcg = isTcgCardItem(item);
+  const shopIds = tcg
+    ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
+    : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'tcgplayer', 'cardmarket'];
   return {
     status,
     matches,
@@ -143,6 +147,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     query: primaryQuery,
     imageUrl,
     errors,
+    tcg,
     sampleSize: matches.length,
     low: matches.length ? Math.min(...matches.map((m) => m.price)) : null,
     median: matches.length ? pickMedian(matches.map((m) => m.price)) : null,
@@ -150,9 +155,9 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     currency: 'USD',
     links: [
       ...buildVisualMarketLinks(imageUrl),
-      ...(primaryQuery ? buildShopLinksForQuery(primaryQuery).filter((l) =>
-        ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp'].includes(l.id)
-      ) : [])
+      ...(primaryQuery
+        ? buildShopLinksForQuery(primaryQuery, { tcg }).filter((l) => shopIds.includes(l.id))
+        : [])
     ],
     note: status === 'found'
       ? `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`
@@ -165,7 +170,6 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 }
 
 function buildSearchQueries(item) {
-  // Lazy import avoided — duplicate minimal loose query from item fields
   const parts = [];
   const manufacturer = clean(item?.manufacturer);
   const series = clean(item?.series);
@@ -173,6 +177,16 @@ function buildSearchQueries(item) {
   const itemNumber = clean(item?.item_number);
   const franchise = clean(item?.franchise);
   const soft = soften(clean(item?.name));
+  const tcg = isTcgCardItem(item);
+
+  if (tcg) {
+    // Cartas: nombre + set/número suelen encontrar mejor en TCGPlayer
+    if (soft && (series || franchise || itemNumber)) {
+      parts.push([soft, series || franchise, itemNumber].filter(Boolean).join(' '));
+    }
+    if (character && (series || franchise)) parts.push([character, series || franchise].join(' '));
+    if (soft) parts.push(`${soft} TCG`);
+  }
 
   if (series && character) parts.push([series, character, manufacturer].filter(Boolean).join(' '));
   if (soft) parts.push(soft);
@@ -227,9 +241,9 @@ export async function searchMarketWithGemini(item, opts) {
     item?.franchise && `Franchise: ${item.franchise}`
   ].filter(Boolean).join('\n');
 
-  const prompt = `You are a collectible figure market price assistant.
-Search the LIVE web for current asking/sold prices (eBay, Amazon, Mercari, AmiAmi, Yahoo Auctions JP, Mandarake) for this figure.
-Use the search hints. Prefer listings that match the SAME product (same line/series), not random similar toys.
+  const tcg = isTcgCardItem(item);
+  const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'figures and collectibles'}).
+Search the LIVE web for current market prices${tcg ? ' prioritizing TCGPlayer market price, Cardmarket trend, and PriceCharting' : ' (eBay, Amazon, Mercari, AmiAmi, Yahoo Auctions JP)'}${tcg ? '. Also check eBay sold comps for the same card (set + number).' : '.'}
 
 Item data:
 ${meta || '(minimal data)'}
@@ -244,18 +258,19 @@ Return ONLY valid JSON (no markdown) with this shape:
       "title": "listing or product title",
       "price": 49.99,
       "currency": "USD",
-      "source": "ebay|amazon|mercari|amiami|yahoo|other",
+      "source": "${tcg ? 'tcgplayer|cardmarket|pricecharting|ebay|other' : 'ebay|amazon|mercari|amiami|yahoo|tcgplayer|cardmarket|other'}",
       "url": "https://...",
       "note": "short why it matches"
     }
   ]
 }
 Rules:
-- price must be a number in USD when possible (convert JPY≈price/150 if needed and set currency USD, note original).
+- price must be a number in USD when possible (convert EUR/JPY if needed; note original).
 - Include 1–8 real matches if found; empty array if none.
 - Do NOT invent URLs; omit url if unknown.
-- If multiple variants exist, include several so the user can pick the ideal one.
-- If live listings are unavailable, still return 2–5 realistic secondary-market USD price options for the closest matching product variants (label note as "estimado de mercado").`;
+- If multiple variants/conditions/foil/editions exist, include several so the user can pick the ideal one.
+${tcg ? '- Prefer Near Mint market price when available; label condition in note.' : ''}
+- If live listings are unavailable, still return 2–5 realistic secondary-market USD price options (label note as "estimado de mercado").`;
 
   const parts = [{ text: prompt }];
 
@@ -415,7 +430,7 @@ export function scoreAndSortMatches(matches, item) {
       for (const t of tokens) {
         if (title.includes(t.toLowerCase())) score += 2;
       }
-      if (m.source === 'ebay') score += 1;
+      if (m.source === 'ebay' || m.source === 'tcgplayer' || m.source === 'cardmarket') score += 1;
       if (m.url) score += 0.5;
       return { ...m, score };
     })
@@ -423,12 +438,13 @@ export function scoreAndSortMatches(matches, item) {
 }
 
 async function searchPricesViaWebIndex(query, limit = 8) {
-  const q = encodeURIComponent(`${query} figure price ebay OR amazon`);
+  const qCard = encodeURIComponent(`${query} TCGPlayer price`);
+  const qFig = encodeURIComponent(`${query} figure price ebay OR amazon`);
   const targets = [
-    `https://r.jina.ai/http://www.bing.com/search?q=${q}`,
-    `https://r.jina.ai/http://html.duckduckgo.com/html/?q=${q}`
+    `https://r.jina.ai/http://www.bing.com/search?q=${qCard}`,
+    `https://r.jina.ai/http://www.bing.com/search?q=${qFig}`,
+    `https://r.jina.ai/http://html.duckduckgo.com/html/?q=${qCard}`
   ];
-  /** @type {import('./AutoMarketSearchProvider.js').MarketMatch[]} */
   const out = [];
   for (const url of targets) {
     try {
@@ -443,16 +459,18 @@ async function searchPricesViaWebIndex(query, limit = 8) {
       while ((m = pairRe.exec(text)) !== null && out.length < limit) {
         const title = m[1].replace(/\s+/g, ' ').trim();
         const price = Number(String(m[2]).replace(/,/g, ''));
-        if (!Number.isFinite(price) || price < 8 || price > 20000) continue;
+        if (!Number.isFinite(price) || price < 0.25 || price > 20000) continue;
         if (/cookie|privacy|sign in|results|filter/i.test(title)) continue;
+        const isTcg = /tcg|cardmarket|pricecharting|pokemon|yugioh|mtg/i.test(title + url);
         out.push({
           id: `web-${out.length}-${price}`,
           title: title.slice(0, 160),
           price,
           currency: 'USD',
-          source: 'web',
+          source: isTcg ? 'tcgplayer' : 'web',
           query,
-          note: 'Precio visto en búsqueda web'
+          note: isTcg ? 'Precio visto (TCG / web)' : 'Precio visto en búsqueda web',
+          url: buildTcgShopLinks(query)[0]?.url
         });
       }
       if (out.length) break;

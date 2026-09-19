@@ -331,7 +331,20 @@ test('enlaces US/JP incluyen eBay, Amazon y Yahoo JP', () => {
   assert(ids.includes('mercari-jp'));
   assert(ids.includes('amiami'));
   assert(ids.includes('mandarake'));
+  assert(ids.includes('tcgplayer'));
+  assert(ids.includes('cardmarket'));
   assert(!ids.some((id) => id.includes('mercado') || id.includes('ml')), 'sin Mercado Libre');
+});
+
+test('TCGPlayer y Cardmarket priorizados para cartas', () => {
+  assert(ebayLinks.isTcgCardItem({ category: 'TCG', name: 'Charizard ex' }));
+  assert(ebayLinks.isTcgCardItem({ franchise: 'Pokemon', name: 'Pikachu 025' }));
+  assert(!ebayLinks.isTcgCardItem({ series: 'Nendoroid', name: 'Link' }));
+  const links = ebayLinks.buildShopLinksForQuery('Charizard ex 223', { tcg: true });
+  assert(links[0].id === 'tcgplayer', links[0].id);
+  assert(links.some((l) => l.id === 'cardmarket'));
+  assert(links.some((l) => l.id === 'pricecharting'));
+  assert(/tcgplayer\.com\/search/.test(links[0].url));
 });
 
 test('enlaces visuales con imageUrl', () => {
