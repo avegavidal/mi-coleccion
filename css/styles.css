@@ -326,11 +326,101 @@ a.btn {
   font-size: 0.95rem;
 }
 
-.auth-divider {
-  border: 0;
-  border-top: 1px solid var(--line);
-  margin: 28px 0;
+.auth-sso {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
 }
+
+.auth-divider-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.auth-divider-label::before,
+.auth-divider-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.btn-google {
+  background: #fff;
+  color: #1f2937;
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-passkey {
+  background: linear-gradient(165deg, #0f172a, #1e293b);
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow-md);
+}
+
+.card-market {
+  margin: 8px 0 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: -0.02em;
+  color: var(--accent-2);
+}
+
+.card-deal {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
+.card-deal.deal-steal,
+.card-deal.deal-good {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.card-deal.deal-high,
+.card-deal.deal-expensive {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.passkey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 14px;
+}
+
+.passkey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.passkey-row strong {
+  display: block;
+}
+
 
 /* —— Controls —— */
 .input,

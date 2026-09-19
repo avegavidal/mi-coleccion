@@ -1,6 +1,7 @@
-import { el, emptyState, formatDate } from '../utils/dom.js';
+import { el, emptyState, formatDate, formatMoney } from '../utils/dom.js';
 import { getDashboardStats, listItems } from '../services/collectionService.js';
 import { enrichItemsWithThumbs } from '../services/exportService.js';
+import { classifyDeal } from '../services/marketPriceService.js';
 
 export async function renderDashboard(root) {
   root.append(el('div', { className: 'page' }, [
@@ -74,6 +75,11 @@ export async function renderDashboard(root) {
 }
 
 export function itemCard(item) {
+  const deal = item.market_price_median != null
+    ? classifyDeal(item.purchase_price, item.market_price_median)
+    : null;
+  const showDeal = deal && deal.code !== 'unknown_purchase' && deal.code !== 'unknown_market';
+
   return el('a', { href: `#/item/${item.id}`, className: 'item-card' }, [
     el('div', {
       className: 'item-card-photo',
@@ -85,7 +91,19 @@ export function itemCard(item) {
     el('div', { className: 'item-card-body' }, [
       el('h3', { text: item.name }),
       el('p', { className: 'muted', text: item.collections?.name || 'Sin categoría' }),
-      item.manufacturer ? el('p', { className: 'card-meta', text: item.manufacturer }) : null
+      item.manufacturer ? el('p', { className: 'card-meta', text: item.manufacturer }) : null,
+      el('p', {
+        className: `card-market${item.market_price_median == null ? ' hidden' : ''}`,
+        dataset: { marketFor: item.id },
+        text: item.market_price_median != null
+          ? formatMoney(item.market_price_median, item.market_currency || 'USD')
+          : ''
+      }),
+      el('p', {
+        className: `card-deal${showDeal ? ` deal-${deal.code}` : ' hidden'}`,
+        dataset: { dealFor: item.id },
+        text: showDeal ? deal.label : ''
+      })
     ])
   ]);
 }

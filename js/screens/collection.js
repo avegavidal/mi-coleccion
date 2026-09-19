@@ -9,7 +9,7 @@ import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from 
 import {
   buildMarketQuery,
   cachedMarketFromItem,
-  lookupMarketPrice,
+  ensureMarketPrice,
   saveManualMarketPrice
 } from '../services/marketPriceService.js';
 import { navigate } from '../utils/router.js';
@@ -46,9 +46,12 @@ export async function renderCollection(root) {
     sel.append(el('option', { value: c.id, text: c.name }));
   }
 
+  let marketSeq = 0;
+
   const load = async () => {
     const grid = root.querySelector('#items-grid');
     grid.innerHTML = '<p class="muted">Cargando…</p>';
+    const seq = ++marketSeq;
     try {
       const items = await listItems({
         search: root.querySelector('#q').value,
@@ -62,6 +65,33 @@ export async function renderCollection(root) {
         return;
       }
       for (const item of withThumbs) grid.append(itemCard(item));
+
+      // Precio de mercado automático al buscar / listar (sin botón)
+      const searchActive = Boolean(root.querySelector('#q').value?.trim());
+      const batch = searchActive ? withThumbs.slice(0, 12) : withThumbs.slice(0, 6);
+      for (const item of batch) {
+        ensureMarketPrice(item)
+          .then((result) => {
+            if (seq !== marketSeq || !result) return;
+            Object.assign(item, {
+              market_price_median: result.median,
+              market_currency: result.currency,
+              market_checked_at: result.checkedAt
+            });
+            const badge = grid.querySelector(`[data-market-for="${item.id}"]`);
+            if (badge && result.median != null) {
+              badge.textContent = formatMoney(result.median, result.currency || 'USD');
+              badge.classList.remove('hidden');
+            }
+            const deal = grid.querySelector(`[data-deal-for="${item.id}"]`);
+            if (deal && result.deal?.label && result.deal.code !== 'unknown_purchase' && result.deal.code !== 'unknown_market') {
+              deal.textContent = result.deal.label;
+              deal.className = `card-deal deal-${result.deal.code}`;
+              deal.classList.remove('hidden');
+            }
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       grid.innerHTML = `<p class="error-text">${err.message}</p>`;
     }
@@ -70,6 +100,11 @@ export async function renderCollection(root) {
   root.querySelector('#apply-filters').addEventListener('click', load);
   root.querySelector('#q').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') load();
+  });
+  let searchTimer = null;
+  root.querySelector('#q').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(load, 450);
   });
   await load();
 }
@@ -244,15 +279,14 @@ export async function renderItemDetail(root, params) {
     el('section', { className: 'market-panel', id: 'market-panel' }, [
       el('div', { className: 'market-panel-head' }, [
         el('h2', { text: 'Precio de mercado' }),
-        el('p', { className: 'page-sub', text: 'eBay US · Mercari · Yahoo Auctions JP · AmiAmi · Mandarake' })
+        el('p', { className: 'page-sub', text: 'Se consulta solo al abrir · eBay US · Japón' })
       ]),
       el('div', { id: 'market-body', className: 'market-body' }, [
-        el('p', { className: 'muted', text: 'Consulta anuncios US/JP y compara con lo que pagaste.' })
+        el('p', { className: 'muted', text: 'Consultando mercado…' })
       ]),
       el('div', { className: 'market-actions' }, [
-        el('button', { type: 'button', className: 'btn btn-primary btn-block', id: 'market-refresh', text: 'Consultar mercado' }),
         el('label', { className: 'market-manual' }, [
-          el('span', { text: 'O guarda un estimado (USD) tras ver vendidos' }),
+          el('span', { text: 'Ajusta el estimado (USD) si revisaste vendidos' }),
           el('div', { className: 'market-manual-row' }, [
             el('input', {
               className: 'input',
@@ -278,27 +312,33 @@ export async function renderItemDetail(root, params) {
   const marketBody = root.querySelector('#market-body');
   const cached = cachedMarketFromItem(item);
   if (cached) paintMarketResult(marketBody, cached, item);
-  else {
-    marketBody.innerHTML = '';
-    const q = buildMarketQuery(item);
-    marketBody.append(
-      el('p', { className: 'muted', text: q ? `Buscará: “${q}”` : 'Añade nombre / fabricante para buscar mejor.' })
-    );
-  }
 
-  root.querySelector('#market-refresh').addEventListener('click', async (ev) => {
-    const btn = ev.currentTarget;
-    setBusy(btn, true, 'Consultando…');
-    try {
-      const result = await lookupMarketPrice(item, { persist: true });
+  // Automático al abrir la pieza (sin botón)
+  ensureMarketPrice(item)
+    .then((result) => {
+      if (!result) return;
+      Object.assign(item, {
+        market_price_median: result.median,
+        market_price_low: result.low,
+        market_price_high: result.high,
+        market_currency: result.currency,
+        market_source: result.source,
+        market_checked_at: result.checkedAt
+      });
       paintMarketResult(marketBody, result, item);
-      toast(result.median != null ? 'Mercado actualizado' : 'Enlaces listos — abre vendidos en eBay', 'ok');
-    } catch (err) {
-      toast(err.message, 'error');
-    } finally {
-      setBusy(btn, false);
-    }
-  });
+      const manual = root.querySelector('#market-manual-price');
+      if (manual && result.median != null) manual.value = String(result.median);
+    })
+    .catch((err) => {
+      if (!cached) {
+        marketBody.innerHTML = '';
+        const q = buildMarketQuery(item);
+        marketBody.append(
+          el('p', { className: 'muted', text: err.message || 'No se pudo consultar el mercado.' }),
+          q ? el('p', { className: 'muted small', text: `Consulta: ${q}` }) : null
+        );
+      }
+    });
 
   root.querySelector('#market-save-manual').addEventListener('click', async () => {
     const raw = root.querySelector('#market-manual-price')?.value;

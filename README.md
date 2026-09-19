@@ -120,7 +120,26 @@ Las políticas de Storage ya están en el SQL.
 En **Authentication → URL Configuration**:
 
 - **Site URL**: la URL de GitHub Pages (paso 9), por ejemplo `https://TU_USUARIO.github.io/mi-coleccion/`
-- **Redirect URLs**: la misma URL
+- **Redirect URLs**: la misma URL (y `https://TU_USUARIO.github.io/mi-coleccion/**` si lo pide)
+
+### 7b) Google + Face ID (Passkeys)
+
+**Google**
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → crea un proyecto OAuth
+2. Credenciales → OAuth client ID tipo **Web**
+3. Authorized redirect URI (la que muestra Supabase):  
+   `https://TU-PROYECTO.supabase.co/auth/v1/callback`
+4. En Supabase: **Authentication → Providers → Google** → pega Client ID y Secret → Enable
+5. Con el registro público desactivado, Google solo entra si el email **ya existe** como usuario (créalo antes en Authentication → Users)
+
+**Passkeys / Face ID**
+
+1. Supabase → **Authentication → Passkeys** → Enable
+2. Relying Party ID: `TU_USUARIO.github.io` (sin https, sin path)
+3. Origins: `https://TU_USUARIO.github.io`
+4. Entra una vez con email o Google → **Cuenta** → **Registrar Face ID en este iPhone**
+5. Luego en el login usa **Entrar con Face ID / Passkey**
 
 ### 8) Copiar URL y anon key
 

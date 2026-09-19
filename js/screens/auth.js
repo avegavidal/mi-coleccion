@@ -8,12 +8,27 @@ export async function renderLogin(root) {
       el('div', { className: 'auth-brand' }, [
         el('div', { className: 'logo-mark', text: 'MC' }),
         el('h1', { text: 'Mi Colección' }),
-        el('p', { className: 'auth-sub', text: 'Acceso privado. Solo cuentas autorizadas.' })
+        el('p', { className: 'auth-sub', text: 'Acceso privado. Google, Face ID o email.' })
       ]),
+      el('div', { className: 'auth-sso' }, [
+        el('button', {
+          type: 'button',
+          className: 'btn btn-google btn-block',
+          id: 'btn-google',
+          text: 'Continuar con Google'
+        }),
+        el('button', {
+          type: 'button',
+          className: 'btn btn-passkey btn-block',
+          id: 'btn-passkey',
+          text: 'Entrar con Face ID / Passkey'
+        })
+      ]),
+      el('div', { className: 'auth-divider-label' }, [el('span', { text: 'o con email' })]),
       el('form', { className: 'auth-form', id: 'login-form' }, [
         el('label', {}, [
           el('span', { text: 'Email' }),
-          el('input', { type: 'email', name: 'email', autocomplete: 'email', required: true, placeholder: 'tu@email.com' })
+          el('input', { type: 'email', name: 'email', autocomplete: 'username webauthn', required: true, placeholder: 'tu@email.com' })
         ]),
         el('label', {}, [
           el('span', { text: 'Contraseña' }),
@@ -26,6 +41,38 @@ export async function renderLogin(root) {
       ])
     ])
   );
+
+  root.querySelector('#btn-google')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true, 'Abriendo Google…');
+    try {
+      await auth.signInWithGoogle();
+      // Redirección a Google; no navegar aquí
+    } catch (err) {
+      toast(err.message || 'No se pudo abrir Google', 'error');
+      setBusy(btn, false);
+    }
+  });
+
+  root.querySelector('#btn-passkey')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true, 'Face ID…');
+    try {
+      await auth.signInWithPasskey();
+      toast('Sesión iniciada', 'ok');
+      navigate('dashboard', true);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      if (/cancel|abort|not allowed/i.test(msg)) {
+        toast('Cancelado', 'info');
+      } else if (/passkey_disabled|not enabled/i.test(msg)) {
+        toast('Activa Passkeys en Supabase (Authentication → Passkeys)', 'error');
+      } else {
+        toast(msg || 'No se pudo entrar con Face ID', 'error');
+      }
+      setBusy(btn, false);
+    }
+  });
 
   root.querySelector('#login-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();

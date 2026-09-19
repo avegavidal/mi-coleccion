@@ -1,5 +1,5 @@
 /* Service Worker — cache básico de interfaz (no datos privados de colección) */
-const CACHE = 'mi-coleccion-v2';
+const CACHE = 'mi-coleccion-v3';
 const PRECACHE = [
   './',
   './index.html',

@@ -273,6 +273,30 @@ export function cachedMarketFromItem(item) {
     deal: classifyDeal(item.purchase_price, item.market_price_median),
     checkedAt: item.market_checked_at || null,
     fromCache: true,
-    note: 'Datos guardados. Actualiza o revisa los enlaces US/JP.'
+    note: 'Datos guardados. Se refrescan solos al abrir o buscar la pieza.'
   };
+}
+
+const MARKET_FRESH_MS = 12 * 60 * 60 * 1000;
+
+export function isMarketFresh(item) {
+  if (!item?.market_checked_at || item.market_price_median == null) return false;
+  const t = new Date(item.market_checked_at).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t < MARKET_FRESH_MS;
+}
+
+/**
+ * Usa caché fresco o consulta mercado y persiste.
+ * @param {object} item
+ * @param {{ force?: boolean }} [options]
+ */
+export async function ensureMarketPrice(item, options = {}) {
+  if (!buildMarketQuery(item)) {
+    throw new Error('No hay nombre suficiente para buscar precio');
+  }
+  if (!options.force && isMarketFresh(item)) {
+    return cachedMarketFromItem(item);
+  }
+  return lookupMarketPrice(item, { persist: true });
 }

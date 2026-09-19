@@ -7,7 +7,7 @@ import {
   exportCollectionCSV, exportCollectionJSON, downloadText,
   importCollectionCSV, importCollectionJSON
 } from '../services/exportService.js';
-import { getProfile, signOut, updatePassword } from '../services/authService.js';
+import { getProfile, signOut, updatePassword, listPasskeys, registerPasskey, deletePasskey } from '../services/authService.js';
 import { getDashboardStats } from '../services/collectionService.js';
 import { getRecognitionSettings, updateRecognitionSettings } from '../services/recognitionService.js';
 import { getEmbeddingMeta, warmupEmbeddings } from '../services/embeddingService.js';
@@ -112,6 +112,13 @@ export async function renderStats(root) {
 
 export async function renderAccount(root) {
   const [profile, stats] = await Promise.all([getProfile(), getDashboardStats()]);
+  let passkeys = [];
+  try {
+    passkeys = await listPasskeys();
+  } catch {
+    passkeys = [];
+  }
+
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Mi cuenta' })
@@ -121,7 +128,13 @@ export async function renderAccount(root) {
       el('p', {}, [el('strong', { text: 'Rol: ' }), el('span', { text: profile?.role || 'user' })]),
       el('p', {}, [el('strong', { text: 'Registro: ' }), el('span', { text: profile?.created_at ? new Date(profile.created_at).toLocaleDateString('es') : '—' })]),
       el('p', {}, [el('strong', { text: 'Piezas: ' }), el('span', { text: String(stats.totalItems) })]),
-      el('p', {}, [el('strong', { text: 'Colecciones: ' }), el('span', { text: String(stats.totalCollections) })])
+      el('p', {}, [el('strong', { text: 'Categorías: ' }), el('span', { text: String(stats.totalCollections) })])
+    ]),
+    el('section', { className: 'section' }, [
+      el('h2', { text: 'Face ID / Passkey' }),
+      el('p', { className: 'page-sub', text: 'Registra un passkey una vez; luego entra desde el login con Face ID.' }),
+      el('div', { id: 'passkey-list', className: 'passkey-list' }),
+      el('button', { type: 'button', className: 'btn btn-passkey btn-block', id: 'register-passkey', text: 'Registrar Face ID en este iPhone' })
     ]),
     el('form', { id: 'pwd-form', className: 'stack-form' }, [
       el('h2', { text: 'Cambiar contraseña' }),
@@ -130,6 +143,60 @@ export async function renderAccount(root) {
     ]),
     el('button', { type: 'button', className: 'btn btn-danger btn-block', id: 'logout', text: 'Cerrar sesión' })
   ]));
+
+  const listHost = root.querySelector('#passkey-list');
+  const paintPasskeys = (rows) => {
+    listHost.innerHTML = '';
+    if (!rows.length) {
+      listHost.append(el('p', { className: 'muted', text: 'Ningún passkey registrado aún.' }));
+      return;
+    }
+    for (const pk of rows) {
+      listHost.append(
+        el('div', { className: 'passkey-row' }, [
+          el('div', {}, [
+            el('strong', { text: pk.friendly_name || 'Passkey' }),
+            el('p', { className: 'muted small', text: pk.created_at ? new Date(pk.created_at).toLocaleString('es') : '' })
+          ]),
+          el('button', {
+            type: 'button',
+            className: 'btn btn-ghost',
+            text: 'Quitar',
+            onclick: async () => {
+              if (!confirm('¿Eliminar este passkey?')) return;
+              try {
+                await deletePasskey(pk.id);
+                passkeys = passkeys.filter((p) => p.id !== pk.id);
+                paintPasskeys(passkeys);
+                toast('Passkey eliminado', 'ok');
+              } catch (err) {
+                toast(err.message, 'error');
+              }
+            }
+          })
+        ])
+      );
+    }
+  };
+  paintPasskeys(passkeys);
+
+  root.querySelector('#register-passkey').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true, 'Face ID…');
+    try {
+      await registerPasskey('iPhone');
+      passkeys = await listPasskeys();
+      paintPasskeys(passkeys);
+      toast('Face ID / passkey listo. Ya puedes usarlo en el login.', 'ok');
+    } catch (err) {
+      const msg = err?.message || String(err);
+      if (/cancel|abort|not allowed/i.test(msg)) toast('Cancelado', 'info');
+      else if (/passkey_disabled/i.test(msg)) toast('Activa Passkeys en Supabase → Authentication → Passkeys', 'error');
+      else toast(msg, 'error');
+    } finally {
+      setBusy(btn, false);
+    }
+  });
 
   root.querySelector('#pwd-form').addEventListener('submit', async (e) => {
     e.preventDefault();
