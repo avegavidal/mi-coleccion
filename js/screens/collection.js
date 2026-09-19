@@ -282,7 +282,8 @@ export async function renderItemDetail(root, params) {
 
   const item = await getItem(id);
   const paths = (item.item_images || []).map((i) => i.storage_path);
-  const urls = await getSignedUrls(paths);
+  // URL firmada larga para que Google Lens pueda leer la foto
+  const urls = await getSignedUrls(paths, 60 * 60 * 12);
 
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
@@ -302,26 +303,10 @@ export async function renderItemDetail(root, params) {
     el('section', { className: 'market-panel', id: 'market-panel' }, [
       el('div', { className: 'market-panel-head' }, [
         el('h2', { text: 'Precio de mercado' }),
-        el('p', { className: 'page-sub', text: 'Foto / Lens · Amazon US/JP · eBay · Japón' })
+        el('p', { className: 'page-sub', text: 'Por foto · si hay varias parecidas, elige la ideal' })
       ]),
       el('div', { id: 'market-body', className: 'market-body' }),
-      el('div', { className: 'market-actions' }, [
-        el('label', { className: 'market-manual' }, [
-          el('span', { text: 'Guarda la mediana que viste (USD)' }),
-          el('div', { className: 'market-manual-row' }, [
-            el('input', {
-              className: 'input',
-              id: 'market-manual-price',
-              type: 'number',
-              step: '0.01',
-              min: '0',
-              placeholder: 'Ej. 45.00',
-              value: item.market_price_median ?? ''
-            }),
-            el('button', { type: 'button', className: 'btn btn-ghost', id: 'market-save-manual', text: 'Guardar' })
-          ])
-        ])
-      ])
+      el('div', { className: 'market-actions', id: 'market-actions' })
     ]),
     el('div', { className: 'btn-stack' }, [
       el('a', { href: `#/edit/${item.id}`, className: 'btn btn-primary btn-block', text: 'Editar' }),
@@ -331,6 +316,7 @@ export async function renderItemDetail(root, params) {
   ]));
 
   const marketBody = root.querySelector('#market-body');
+  const marketActions = root.querySelector('#market-actions');
   const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
   const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
     const ia = preferTypes.indexOf(a.image_type);
@@ -339,26 +325,17 @@ export async function renderItemDetail(root, params) {
   });
   const photoPath = sortedImgs[0]?.storage_path;
   const imageUrl = photoPath ? (urls[photoPath] || null) : null;
-  paintMarketResult(marketBody, buildInstantMarket(item, { imageUrl }), item);
 
-  root.querySelector('#market-save-manual').addEventListener('click', async () => {
-    const raw = root.querySelector('#market-manual-price')?.value;
-    try {
-      const saved = await saveManualMarketPrice(item, raw);
-      Object.assign(item, {
-        market_price_median: saved.median,
-        market_price_low: saved.low,
-        market_price_high: saved.high,
-        market_currency: saved.currency,
-        market_source: 'manual',
-        market_checked_at: saved.checkedAt
-      });
-      paintMarketResult(marketBody, saved, item);
-      toast('Estimado de mercado guardado', 'ok');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
+  const refreshMarket = () => {
+    paintMarketResult(marketBody, buildInstantMarket(item, { imageUrl }), item, {
+      onAddCandidatePrice: (preset) => {
+        addMarketCandidate(item.id, preset);
+        paintMarketCandidates(marketActions, item, imageUrl, refreshMarket);
+      }
+    });
+    paintMarketCandidates(marketActions, item, imageUrl, refreshMarket);
+  };
+  refreshMarket();
 
   const gallery = root.querySelector('#gallery');
   if (!item.item_images?.length) {
@@ -534,92 +511,309 @@ export async function renderDuplicates(root) {
  * @param {HTMLElement} host
  * @param {object} result
  * @param {object} item
+ * @param {{ onAddCandidatePrice?: (preset: { price?: string, label?: string }) => void }} [hooks]
  */
-function paintMarketResult(host, result, item) {
+function paintMarketResult(host, result, item, hooks = {}) {
   if (!host) return;
   host.innerHTML = '';
   const currency = result.currency || 'USD';
   const deal = result.deal || {};
 
-  const stats = el('div', { className: 'market-stats' }, [
-    result.median != null
-      ? el('div', { className: 'market-stat main' }, [
-        el('span', { className: 'market-stat-label', text: 'Mediana' }),
-        el('strong', { text: formatMoney(result.median, currency) })
-      ])
-      : el('div', { className: 'market-stat main' }, [
-        el('span', { className: 'market-stat-label', text: 'Mediana' }),
-        el('strong', { text: '—' })
-      ]),
-    result.low != null
-      ? el('div', { className: 'market-stat' }, [
-        el('span', { className: 'market-stat-label', text: 'Desde' }),
-        el('strong', { text: formatMoney(result.low, currency) })
-      ])
-      : null,
-    result.high != null
-      ? el('div', { className: 'market-stat' }, [
-        el('span', { className: 'market-stat-label', text: 'Hasta' }),
-        el('strong', { text: formatMoney(result.high, currency) })
-      ])
-      : null
-  ]);
+  const visual = result.visualLinks?.length
+    ? result.visualLinks
+    : (result.links || []).filter((l) => l.kind === 'visual' || l.region === 'VIS');
 
-  const dealEl = el('div', {
-    className: `market-deal deal-${deal.code || 'unknown'}`,
-  }, [
-    el('strong', { text: deal.label || 'Sin veredicto' }),
-    el('p', { text: deal.detail || '' }),
-    item?.purchase_price != null
-      ? el('p', {
-        className: 'muted small',
-        text: `Tu compra: ${formatMoney(item.purchase_price, item.currency || currency)}`
-      })
-      : null
-  ]);
+  if (visual.length) {
+    const primaryKids = [
+      el('p', { className: 'market-step', text: 'Paso 1 — identifica por la foto' })
+    ];
+    if (result.imageUrl) {
+      primaryKids.push(el('img', {
+        className: 'market-photo-preview',
+        src: result.imageUrl,
+        alt: 'Foto usada para buscar precio',
+        loading: 'lazy'
+      }));
+    }
+    for (const link of visual) {
+      primaryKids.push(el('a', {
+        className: 'btn btn-primary btn-block market-photo-btn',
+        href: link.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: link.label
+      }));
+    }
+    primaryKids.push(el('p', {
+      className: 'muted small',
+      text: visual[0]?.hint || 'Lens encuentra la figura aunque el nombre esté incompleto.'
+    }));
+    host.append(el('div', { className: 'market-primary' }, primaryKids));
+  } else {
+    host.append(el('p', {
+      className: 'muted',
+      text: 'Sin foto en esta pieza: agrega una imagen para buscar precio por foto.'
+    }));
+  }
 
-  host.append(stats, dealEl);
+  const groups = result.queryGroups?.length
+    ? result.queryGroups
+    : (result.query ? [{ query: result.query, links: (result.links || []).filter((l) => l.kind !== 'visual') }] : []);
+
+  if (groups.length) {
+    host.append(el('p', { className: 'market-step', text: 'Paso 2 — búsquedas amplias (no el nombre exacto)' }));
+    for (const group of groups) {
+      const box = el('div', { className: 'market-query-group' }, [
+        el('p', { className: 'market-query-label', text: `“${group.query}”` }),
+        el('div', { className: 'market-query-links' },
+          (group.links || []).map((link) =>
+            el('a', {
+              className: 'market-chip',
+              href: link.url,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              text: link.label
+            })
+          )
+        ),
+        hooks.onAddCandidatePrice
+          ? el('button', {
+            type: 'button',
+            className: 'btn btn-ghost btn-block market-note-btn',
+            text: 'Anotar precio de una parecida…',
+            onClick: () => hooks.onAddCandidatePrice({ label: group.query, price: '' })
+          })
+          : null
+      ]);
+      host.append(box);
+    }
+  }
+
+  if (result.median != null || item?.purchase_price != null) {
+    host.append(el('div', { className: 'market-stats' }, [
+      result.median != null
+        ? el('div', { className: 'market-stat main' }, [
+          el('span', { className: 'market-stat-label', text: 'Tu estimado' }),
+          el('strong', { text: formatMoney(result.median, currency) })
+        ])
+        : el('div', { className: 'market-stat main' }, [
+          el('span', { className: 'market-stat-label', text: 'Tu estimado' }),
+          el('strong', { text: '—' })
+        ]),
+      item?.purchase_price != null
+        ? el('div', { className: 'market-stat' }, [
+          el('span', { className: 'market-stat-label', text: 'Pagaste' }),
+          el('strong', { text: formatMoney(item.purchase_price, item.currency || currency) })
+        ])
+        : null
+    ]));
+
+    host.append(el('div', {
+      className: `market-deal deal-${deal.code || 'unknown'}`
+    }, [
+      el('strong', { text: deal.label || 'Sin veredicto' }),
+      el('p', { text: deal.detail || 'Guarda un estimado tras mirar Lens / eBay.' })
+    ]));
+  }
 
   if (result.note) {
     host.append(el('p', { className: 'muted small', text: result.note }));
   }
-  if (result.query) {
-    host.append(el('p', { className: 'muted small', text: `Consulta: ${result.query}` }));
+}
+
+/** @type {Record<string, Array<{ id: string, price: number, label: string, chosen?: boolean }>>} */
+window.__marketPriceCandidates = window.__marketPriceCandidates || {};
+
+function getMarketCandidates(itemId) {
+  if (!window.__marketPriceCandidates[itemId]) window.__marketPriceCandidates[itemId] = [];
+  return window.__marketPriceCandidates[itemId];
+}
+
+function addMarketCandidate(itemId, preset = {}) {
+  const list = getMarketCandidates(itemId);
+  const price = Number(preset.price);
+  const label = String(preset.label || '').trim() || `Parecida #${list.length + 1}`;
+  if (Number.isFinite(price) && price > 0) {
+    list.push({
+      id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      price,
+      label
+    });
+    return;
   }
-  if (result.checkedAt) {
-    host.append(el('p', { className: 'muted small', text: `Actualizado: ${formatDate(result.checkedAt)}` }));
+  // Sin precio aún: marcar preset para el formulario
+  window.__marketCandidateDraft = {
+    itemId,
+    label,
+    price: preset.price != null ? String(preset.price) : ''
+  };
+}
+
+/**
+ * Paso 3: anotar varias similitudes y elegir la ideal en precio.
+ * @param {HTMLElement} host
+ * @param {object} item
+ * @param {string|null} imageUrl
+ * @param {() => void} refreshMarket
+ */
+function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
+  if (!host) return;
+  host.innerHTML = '';
+  const candidates = getMarketCandidates(item.id);
+  const draft = window.__marketCandidateDraft?.itemId === item.id
+    ? window.__marketCandidateDraft
+    : { label: '', price: '' };
+
+  host.append(el('p', { className: 'market-step', text: 'Paso 3 — si hay varias parecidas, elige la ideal' }));
+  host.append(el('p', {
+    className: 'muted small',
+    text: 'Anota el precio de cada figura similar que viste. Luego toca “Usar este” en la que sí corresponde.'
+  }));
+
+  const form = el('div', { className: 'market-candidate-form' }, [
+    el('input', {
+      className: 'input',
+      id: 'market-cand-label',
+      type: 'text',
+      placeholder: 'Qué viste (ej. Nendoroid Link BOTW)',
+      value: draft.label || ''
+    }),
+    el('div', { className: 'market-manual-row' }, [
+      el('input', {
+        className: 'input',
+        id: 'market-cand-price',
+        type: 'number',
+        step: '0.01',
+        min: '0',
+        placeholder: 'Precio USD',
+        value: draft.price || ''
+      }),
+      el('button', {
+        type: 'button',
+        className: 'btn btn-ghost',
+        id: 'market-cand-add',
+        text: 'Añadir'
+      })
+    ])
+  ]);
+  host.append(form);
+
+  const addBtn = form.querySelector('#market-cand-add');
+  const priceInput = form.querySelector('#market-cand-price');
+  const labelInput = form.querySelector('#market-cand-label');
+
+  const doAdd = () => {
+    const price = Number(priceInput.value);
+    const label = String(labelInput.value || '').trim();
+    if (!Number.isFinite(price) || price <= 0) {
+      toast('Escribe un precio válido', 'error');
+      return;
+    }
+    candidates.push({
+      id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      price,
+      label: label || `Parecida #${candidates.length + 1}`
+    });
+    window.__marketCandidateDraft = null;
+    priceInput.value = '';
+    paintMarketCandidates(host, item, imageUrl, refreshMarket);
+    toast('Candidato añadido', 'ok');
+  };
+
+  addBtn.addEventListener('click', doAdd);
+  priceInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doAdd();
+    }
+  });
+  if (draft.label || draft.price !== undefined && window.__marketCandidateDraft?.itemId === item.id) {
+    priceInput.focus();
   }
 
-  const links = result.links || [];
-  if (links.length) {
-    const list = el('div', { className: 'market-links' });
-    for (const link of links) {
-      list.append(
-        el('a', {
-          className: `market-link region-${link.region}`,
-          href: link.url,
-          target: '_blank',
-          rel: 'noopener noreferrer'
-        }, [
-          el('span', { className: 'market-link-region', text: link.region }),
-          el('span', { className: 'market-link-label', text: link.label }),
-          el('span', { className: 'market-link-hint', text: link.hint })
-        ])
-      );
-    }
-    host.append(list);
+  if (!candidates.length) {
+    host.append(el('p', {
+      className: 'muted small',
+      text: item.market_price_median != null
+        ? `Estimado actual: ${formatMoney(item.market_price_median, item.market_currency || 'USD')}. Puedes añadir más opciones y cambiar la ideal.`
+        : 'Todavía no hay candidatos. Abre Lens/eBay, anota 2–3 precios parecidos y elige.'
+    }));
+    return;
   }
 
-  if (result.listings?.length) {
-    const ul = el('ul', { className: 'market-listings' });
-    for (const row of result.listings.slice(0, 6)) {
-      ul.append(
-        el('li', {}, [
-          el('span', { className: 'market-listing-title', text: row.title }),
-          el('strong', { text: formatMoney(row.price, row.currency || currency) })
-        ])
-      );
-    }
-    host.append(el('h3', { className: 'market-listings-title', text: 'Anuncios eBay (muestra)' }), ul);
+  const sorted = [...candidates].sort((a, b) => a.price - b.price);
+  const list = el('div', { className: 'market-candidate-list' });
+
+  for (const cand of sorted) {
+    const isChosen = Boolean(cand.chosen);
+    const card = el('article', {
+      className: `market-candidate-card${isChosen ? ' is-chosen' : ''}`
+    }, [
+      el('div', { className: 'market-candidate-main' }, [
+        el('strong', { className: 'market-candidate-price', text: formatMoney(cand.price, 'USD') }),
+        el('p', { className: 'market-candidate-label', text: cand.label }),
+        isChosen ? el('span', { className: 'market-candidate-badge', text: 'Ideal (guardada)' }) : null
+      ]),
+      el('div', { className: 'market-candidate-actions' }, [
+        el('button', {
+          type: 'button',
+          className: isChosen ? 'btn btn-primary' : 'btn btn-ghost',
+          text: isChosen ? '✓ Ideal' : 'Usar este',
+          onClick: async () => {
+            try {
+              setBusy(true);
+              const prices = candidates.map((c) => c.price);
+              const saved = await saveManualMarketPrice(item, cand.price, {
+                low: Math.min(...prices),
+                high: Math.max(...prices),
+                sampleSize: candidates.length,
+                query: cand.label,
+                currency: 'USD'
+              });
+              for (const c of candidates) c.chosen = c.id === cand.id;
+              Object.assign(item, {
+                market_price_median: saved.median,
+                market_price_low: saved.low,
+                market_price_high: saved.high,
+                market_currency: saved.currency,
+                market_source: 'manual',
+                market_checked_at: saved.checkedAt,
+                market_sample_size: saved.sampleSize,
+                market_query: saved.query
+              });
+              refreshMarket();
+              toast('Precio ideal guardado', 'ok');
+            } catch (err) {
+              toast(err.message, 'error');
+            } finally {
+              setBusy(false);
+            }
+          }
+        }),
+        el('button', {
+          type: 'button',
+          className: 'btn btn-ghost market-candidate-remove',
+          text: '✕',
+          'aria-label': 'Quitar',
+          onClick: () => {
+            const idx = candidates.findIndex((c) => c.id === cand.id);
+            if (idx >= 0) candidates.splice(idx, 1);
+            paintMarketCandidates(host, item, imageUrl, refreshMarket);
+          }
+        })
+      ])
+    ]);
+    list.append(card);
+  }
+
+  host.append(list);
+
+  if (candidates.length >= 2) {
+    const prices = sorted.map((c) => c.price);
+    const mid = prices[Math.floor(prices.length / 2)];
+    host.append(el('p', {
+      className: 'muted small',
+      text: `${candidates.length} opciones · de ${formatMoney(prices[0], 'USD')} a ${formatMoney(prices[prices.length - 1], 'USD')} · mediana ~${formatMoney(mid, 'USD')}. Elige la que sí sea tu figura.`
+    }));
   }
 }

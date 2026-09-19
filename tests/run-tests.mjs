@@ -272,17 +272,34 @@ const market = await import(pathToFileURL(join(root, 'js/services/marketPriceSer
 const ebayProv = await import(pathToFileURL(join(root, 'js/providers/EbayActiveProvider.js')).href);
 const ebayLinks = await import(pathToFileURL(join(root, 'js/providers/EbayLinkProvider.js')).href);
 
-test('buildMarketQuery prioriza fabricante + número + nombre', () => {
+test('buildMarketQuery prioriza señales amplias (no título exacto)', () => {
   const q = market.buildMarketQuery({
     manufacturer: 'Good Smile',
     item_number: 'GSC-123',
-    name: 'Nendoroid Link',
+    name: 'Nendoroid Link Twilight Princess Exclusive Edition Ver.2',
     franchise: 'Zelda'
   });
-  assert(q.includes('Good Smile'));
-  assert(q.includes('GSC-123'));
-  assert(q.includes('Nendoroid Link'));
+  assert(q.length > 0);
+  assert(!/Exclusive Edition/i.test(q), 'no debe usar el título exacto largo');
+  assert(wordCountSafe(q) <= 6);
 });
+
+test('buildLooseQueries prioriza serie+personaje y código', () => {
+  const qs = market.buildLooseQueries({
+    manufacturer: 'Bandai',
+    series: 'S.H.Figuarts',
+    character_name: 'Goku',
+    name: 'S.H.Figuarts Son Goku Super Saiyan Ultra Instinct Sign Special Color Edition'
+  });
+  assert(qs.length >= 1);
+  assert(qs.some((q) => /Figuarts/i.test(q) && /Goku/i.test(q)), qs.join(' | '));
+  assert(qs.every((q) => !/Special Color Edition/i.test(q)));
+  assert(/Figuarts|Goku/i.test(qs[0]), `primary debería ser serie/personaje: ${qs[0]}`);
+});
+
+function wordCountSafe(s) {
+  return String(s || '').trim().split(/\s+/).filter(Boolean).length;
+}
 
 test('summarizePrices calcula mediana', () => {
   const s = market.summarizePrices([10, 20, 30, 40, 1000]);

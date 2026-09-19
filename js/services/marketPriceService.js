@@ -1,43 +1,106 @@
 import { EbayActiveProvider } from '../providers/EbayActiveProvider.js';
-import { buildMarketLinks, ebayMarketUrls } from '../providers/EbayLinkProvider.js';
+import {
+  buildMarketLinks,
+  buildShopLinksForQuery,
+  buildVisualMarketLinks,
+  ebayMarketUrls
+} from '../providers/EbayLinkProvider.js';
 
-const cfg = () => window.APP_CONFIG || {};
+const cfg = () => globalThis.APP_CONFIG || globalThis.window?.APP_CONFIG || {};
 
 /**
+ * Consultas AMPLIAS para marketplaces (nunca el título exacto largo).
+ * Prioriza: código+marca, serie+personaje, keywords cortas.
  * @param {object} item
  * @returns {string}
  */
 export function buildMarketQuery(item) {
-  if (!item || typeof item !== 'object') return '';
-  const parts = [];
+  const queries = buildLooseQueries(item);
+  return queries[0] || '';
+}
+
+/**
+ * @param {object} item
+ * @returns {string[]}
+ */
+export function buildLooseQueries(item) {
+  if (!item || typeof item !== 'object') return [];
   const manufacturer = cleanPart(item.manufacturer);
   const itemNumber = cleanPart(item.item_number);
-  const name = cleanPart(item.name);
-  const character = cleanPart(item.character_name || item.character);
   const franchise = cleanPart(item.franchise);
+  const character = cleanPart(item.character_name || item.character);
   const series = cleanPart(item.series);
+  const category = cleanPart(item.category);
+  const softName = softenTitle(cleanPart(item.name));
 
-  if (manufacturer) parts.push(manufacturer);
-  if (itemNumber) parts.push(itemNumber);
-  if (name) parts.push(name);
-  else if (character) parts.push(character);
-  if (franchise && !name?.toLowerCase().includes(franchise.toLowerCase())) parts.push(franchise);
-  if (series && series.length <= 40) parts.push(series);
+  // Orden pensado para marketplaces: serie+personaje suele encontrar más
+  // que fabricante+SKU (Amazon a menudo no indexa el número de artículo).
+  const candidates = [];
+  if (series && character) {
+    candidates.push(joinUnique([series, character, manufacturer].filter(Boolean)));
+  }
+  if (softName) candidates.push(softName);
+  if (franchise && character) candidates.push(joinUnique([franchise, character]));
+  if (manufacturer && itemNumber) candidates.push(joinUnique([manufacturer, itemNumber]));
+  if (itemNumber && (series || franchise || character)) {
+    candidates.push(joinUnique([itemNumber, series || franchise || character]));
+  }
+  if (manufacturer && (character || franchise) && !(series && character)) {
+    candidates.push(joinUnique([manufacturer, character || franchise, series].filter(Boolean)));
+  }
+  if (category && (character || franchise)) {
+    candidates.push(joinUnique([category, character || franchise]));
+  }
+  if (manufacturer && series && !character) {
+    candidates.push(joinUnique([manufacturer, series]));
+  }
 
   const seen = new Set();
-  const unique = [];
-  for (const p of parts) {
-    const key = p.toLowerCase();
-    if (seen.has(key)) continue;
+  const out = [];
+  for (const q of candidates) {
+    const key = q.toLowerCase();
+    if (!q || seen.has(key)) continue;
+    // Evitar queries casi idénticas (mismo set de palabras)
+    const norm = key.split(/\s+/).sort().join(' ');
+    if (seen.has(`#${norm}`)) continue;
     seen.add(key);
-    unique.push(p);
+    seen.add(`#${norm}`);
+    out.push(q);
+    if (out.length >= 3) break;
   }
-  return unique.join(' ').replace(/\s+/g, ' ').trim();
+  return out;
 }
 
 function cleanPart(v) {
   if (v == null) return '';
   return String(v).replace(/\s+/g, ' ').trim();
+}
+
+function softenTitle(name) {
+  if (!name) return '';
+  const stop = new Set(['the', 'and', 'de', 'del', 'la', 'el', 'edition', 'ver', 'version', 'exclusive', 'limited', 'special']);
+  return name
+    .replace(/[#№]/g, ' ')
+    .replace(/\b(ver\.?|version|exclusive|limited|edition|special|dx|re-?run|pre-?order|scale|figure|fig)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s\-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !stop.has(w.toLowerCase()))
+    .slice(0, 4)
+    .join(' ');
+}
+
+function joinUnique(parts) {
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const key = String(p || '').toLowerCase();
+    if (!p || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -178,51 +241,59 @@ export function cachedMarketFromItem(item, opts = {}) {
 }
 
 /**
- * Snapshot instantáneo: foto (Lens) + texto amplio + Amazon US/JP.
+ * Snapshot: foto primero + 1–3 búsquedas amplias (no título exacto).
  * @param {object} item
  * @param {{ imageUrl?: string|null }} [opts]
  */
 export function buildInstantMarket(item, opts = {}) {
-  const query = buildMarketQuery(item);
+  const queries = buildLooseQueries(item);
+  const query = queries[0] || '';
   const imageUrl = opts.imageUrl || null;
+  const visual = buildVisualMarketLinks(imageUrl);
+  const shopPrimary = query ? filterLinks(buildShopLinksForQuery(query)).slice(0, 6) : [];
+  const queryGroups = queries.map((q) => ({
+    query: q,
+    links: filterLinks(buildShopLinksForQuery(q)).filter((l) =>
+      ['ebay-sold', 'amazon-us', 'amazon-jp'].includes(l.id)
+    )
+  }));
   const ebay = ebayMarketUrls(query);
-  const links = filterLinks(buildMarketLinks(query, { imageUrl }));
-  const cached = cachedMarketFromItem(item, { imageUrl });
-
-  if (cached) {
-    return {
-      ...cached,
-      links,
-      ebay,
-      searchUrl: ebay.active,
-      soldUrl: ebay.sold,
-      query: cached.query || query,
-      imageUrl,
-      instant: true
-    };
-  }
+  const cached = item?.market_price_median != null
+    ? {
+      median: Number(item.market_price_median),
+      low: item.market_price_low != null ? Number(item.market_price_low) : null,
+      high: item.market_price_high != null ? Number(item.market_price_high) : null,
+      currency: item.market_currency || item.currency || 'USD',
+      checkedAt: item.market_checked_at || null,
+      fromCache: true
+    }
+    : null;
 
   return {
     query,
+    queries,
+    queryGroups,
     imageUrl,
-    source: 'market-links',
-    label: 'Mercados US / JP',
-    currency: item?.currency || 'USD',
+    source: 'photo-first',
+    label: 'Buscar por foto',
+    currency: cached?.currency || item?.currency || 'USD',
     sampleSize: 0,
-    low: null,
-    median: null,
-    high: null,
+    low: cached?.low ?? null,
+    median: cached?.median ?? null,
+    high: cached?.high ?? null,
     listings: [],
     searchUrl: ebay.active,
     soldUrl: ebay.sold,
-    links,
+    links: [...visual, ...shopPrimary],
+    visualLinks: visual,
     ebay,
     note: imageUrl
-      ? 'Empieza por Google Lens (foto). Luego eBay vendidos / Amazon para anclar el precio.'
-      : 'Sin foto firmada: añade una imagen a la pieza para buscar por foto. Mientras, usa texto amplio.',
-    deal: classifyDeal(item?.purchase_price, null),
-    checkedAt: new Date().toISOString(),
-    instant: true
+      ? '1) Abre “Buscar precio por foto”. 2) Mira precios parecidos. 3) Guarda la mediana abajo.'
+      : 'Agrega una foto a la pieza para buscar por imagen. Mientras, usa las búsquedas amplias.',
+    deal: classifyDeal(item?.purchase_price, cached?.median),
+    checkedAt: cached?.checkedAt || new Date().toISOString(),
+    instant: true,
+    fromCache: Boolean(cached)
   };
 }
 
@@ -340,10 +411,11 @@ export function isMarketFresh(item) {
   return Date.now() - t < MARKET_FRESH_MS;
 }
 
-/** Instantáneo: sin red. */
-export async function ensureMarketPrice(item) {
-  if (!buildMarketQuery(item) && item?.market_price_median == null) {
-    throw new Error('No hay nombre suficiente para buscar precio');
+/** Instantáneo: sin red. Foto + datos sueltos; no exige nombre exacto. */
+export async function ensureMarketPrice(item, opts = {}) {
+  const hasPhoto = Boolean(opts.imageUrl);
+  if (!buildMarketQuery(item) && item?.market_price_median == null && !hasPhoto) {
+    throw new Error('Agrega una foto o algunos datos (marca, serie, personaje) para buscar precio');
   }
-  return buildInstantMarket(item);
+  return buildInstantMarket(item, opts);
 }

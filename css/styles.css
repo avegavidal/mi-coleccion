@@ -1049,9 +1049,72 @@ a.stat-card:active {
   color: #f0a0a0;
 }
 
-.market-link.region-VIS .market-link-region {
-  color: #0f766e;
-  background: var(--accent-soft);
+.market-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.market-photo-preview {
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+
+.market-photo-btn {
+  font-size: 1.05rem;
+  min-height: 54px;
+}
+
+.market-step {
+  margin: 8px 0 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.market-query-group {
+  padding: 12px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+}
+
+.market-query-label {
+  margin: 0 0 8px;
+  font-weight: 650;
+  font-size: 0.95rem;
+}
+
+.market-query-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.market-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.market-chip:active {
+  border-color: var(--accent);
+  color: var(--accent-2);
 }
 
 .market-link-label {
@@ -1115,6 +1178,81 @@ a.stat-card:active {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.market-note-btn {
+  margin-top: 10px;
+  font-size: 0.88rem;
+}
+
+.market-candidate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.market-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.market-candidate-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+}
+
+.market-candidate-card.is-chosen {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.market-candidate-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.market-candidate-price {
+  display: block;
+  font-size: 1.15rem;
+}
+
+.market-candidate-label {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-candidate-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+
+.market-candidate-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.market-candidate-remove {
+  min-width: 40px;
+  padding-inline: 10px;
 }
 
 .muted.small {
