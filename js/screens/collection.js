@@ -11,9 +11,14 @@ import {
   buildInstantMarket,
   lookupMarketPrice,
   saveManualMarketPrice,
-  classifyDeal
+  classifyDeal,
+  getCachedMarketView,
+  saveMarketCache,
+  clearMarketCache
 } from '../services/marketPriceService.js';
 import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
+import { isTcgCardItem } from '../providers/EbayLinkProvider.js';
+import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 import { navigate } from '../utils/router.js';
 
 export async function renderCollection(root) {
@@ -322,9 +327,18 @@ export async function renderItemDetail(root, params) {
     el('section', { className: 'market-panel', id: 'market-panel' }, [
       el('div', { className: 'market-panel-head' }, [
         el('h2', { text: 'Precio de mercado' }),
-        el('p', { className: 'page-sub', text: 'Búsqueda automática · elige la coincidencia ideal' })
+        el('p', { className: 'page-sub', text: 'Caché local · ganancia vs lo que pagaste' })
       ]),
-      el('div', { id: 'market-status', className: 'status-line muted', text: 'Buscando precios…' }),
+      el('div', { className: 'market-toolbar' }, [
+        el('div', { id: 'market-status', className: 'status-line muted', text: '…' }),
+        el('button', {
+          type: 'button',
+          className: 'btn btn-ghost',
+          id: 'market-refresh',
+          text: 'Buscar de nuevo'
+        })
+      ]),
+      el('div', { id: 'market-profit', className: 'market-profit hidden' }),
       el('div', { id: 'market-body', className: 'market-body' }),
       el('div', { className: 'market-actions', id: 'market-actions' })
     ]),
@@ -338,6 +352,8 @@ export async function renderItemDetail(root, params) {
   const marketBody = root.querySelector('#market-body');
   const marketActions = root.querySelector('#market-actions');
   const marketStatus = root.querySelector('#market-status');
+  const marketProfit = root.querySelector('#market-profit');
+  const marketRefreshBtn = root.querySelector('#market-refresh');
   const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
   const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
     const ia = preferTypes.indexOf(a.image_type);
@@ -350,6 +366,24 @@ export async function renderItemDetail(root, params) {
   /** @type {object|null} */
   let lastMarketResult = null;
 
+  const paintProfit = () => {
+    if (!marketProfit) return;
+    const deal = classifyDeal(item.purchase_price, item.market_price_median);
+    if (deal.code === 'unknown_purchase' || deal.code === 'unknown_market') {
+      marketProfit.className = 'market-profit muted';
+      marketProfit.textContent = deal.detail;
+      return;
+    }
+    const gain = deal.profit != null && deal.profit > 0;
+    const loss = deal.profit != null && deal.profit < 0;
+    marketProfit.className = `market-profit ${gain ? 'is-gain' : loss ? 'is-loss' : 'is-even'}`;
+    marketProfit.innerHTML = '';
+    marketProfit.append(
+      el('strong', { text: deal.label }),
+      el('p', { text: deal.detail })
+    );
+  };
+
   const applyChosenMatch = async (match, allMatches, btn = null) => {
     try {
       setBusy(btn, true, 'Guardando…');
@@ -360,7 +394,8 @@ export async function renderItemDetail(root, params) {
         high: prices.length ? Math.max(...prices) : match.price,
         sampleSize: Math.max(1, prices.length),
         query: match.title || match.query || item.name,
-        currency: match.currency || 'USD'
+        currency: match.currency || 'USD',
+        chosenId: match.id
       });
       item.market_price_median = saved.median;
       item.market_price_low = saved.low;
@@ -370,17 +405,25 @@ export async function renderItemDetail(root, params) {
       item.market_checked_at = saved.checkedAt;
       item.market_sample_size = saved.sampleSize;
       item.market_query = saved.query;
+      const deal = classifyDeal(item.purchase_price, saved.median);
       const next = {
         ...(lastMarketResult || buildInstantMarket(item, { imageUrl })),
         median: saved.median,
         low: saved.low,
         high: saved.high,
         chosenId: match.id,
-        deal: classifyDeal(item.purchase_price, saved.median)
+        deal,
+        fromCache: true
       };
+      saveMarketCache(item.id, { ...next, matches: allMatches || next.matches || [] });
       refreshMarket(next);
-      if (marketStatus) marketStatus.textContent = 'Precio ideal guardado';
-      toast('Precio ideal guardado', 'ok');
+      paintProfit();
+      if (marketStatus) marketStatus.textContent = 'Precio ideal guardado (en caché)';
+      if (deal.profit != null && item.purchase_price != null) {
+        toast(deal.label, deal.profit >= 0 ? 'ok' : 'error');
+      } else {
+        toast('Precio ideal guardado', 'ok');
+      }
     } catch (err) {
       toast(err.message, 'error');
       if (marketStatus) marketStatus.textContent = err.message || 'No se pudo guardar';
@@ -399,31 +442,56 @@ export async function renderItemDetail(root, params) {
       }
     });
     paintMarketCandidates(marketActions, item, imageUrl, () => refreshMarket(lastMarketResult || buildInstantMarket(item, { imageUrl })));
+    paintProfit();
   };
 
-  // Mostrar esqueleto + buscar automático
-  refreshMarket(buildInstantMarket(item, { imageUrl }));
-  marketStatus.textContent = 'Buscando precios automáticamente…';
-
-  lookupMarketPrice(item, {
-    imageUrl,
-    onProgress: (p) => {
-      if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
-    }
-  }).then((result) => {
-    refreshMarket(result);
-    if (result.status === 'found') {
-      marketStatus.textContent = result.matches?.length > 1
-        ? `Encontré ${result.matches.length} coincidencias — elige la ideal`
-        : 'Encontré 1 coincidencia';
-    } else if (result.status === 'empty') {
-      marketStatus.textContent = 'Sin coincidencias automáticas';
+  const runMarketSearch = (force = false) => {
+    if (!force) {
+      const cached = getCachedMarketView(item, { imageUrl });
+      if (cached) {
+        refreshMarket(cached);
+        marketStatus.textContent = cached.fromCache
+          ? 'Mostrando búsqueda guardada'
+          : 'Mostrando precio guardado';
+        return;
+      }
     } else {
-      marketStatus.textContent = result.note || 'No se pudo completar la búsqueda automática';
+      clearMarketCache(item.id);
     }
-  }).catch((err) => {
-    marketStatus.textContent = err.message || 'Error al buscar precio';
+
+    marketStatus.textContent = 'Buscando precios automáticamente…';
+    refreshMarket(buildInstantMarket(item, { imageUrl }));
+    lookupMarketPrice(item, {
+      imageUrl,
+      onProgress: (p) => {
+        if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
+      }
+    }).then((result) => {
+      refreshMarket(result);
+      paintProfit();
+      if (result.status === 'found') {
+        marketStatus.textContent = result.matches?.length > 1
+          ? `Encontré ${result.matches.length} coincidencias — elige la ideal`
+          : 'Encontré 1 coincidencia';
+      } else if (result.status === 'empty') {
+        marketStatus.textContent = 'Sin coincidencias automáticas';
+      } else {
+        marketStatus.textContent = result.note || 'No se pudo completar la búsqueda automática';
+      }
+    }).catch((err) => {
+      marketStatus.textContent = err.message || 'Error al buscar precio';
+    });
+  };
+
+  marketRefreshBtn?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true, 'Buscando…');
+    runMarketSearch(true);
+    // setBusy ends when search paints; unlock after short delay if still busy
+    setTimeout(() => setBusy(btn, false), 800);
   });
+
+  runMarketSearch(false);
 
   const gallery = root.querySelector('#gallery');
   if (!item.item_images?.length) {
@@ -567,8 +635,17 @@ export async function renderEdit(root, params) {
     const btn = e.target.querySelector('[type=submit]');
     setBusy(btn, true);
     try {
-      await updateItem(id, Object.fromEntries(fd.entries()));
-      toast('Guardado', 'ok');
+      const payload = Object.fromEntries(fd.entries());
+      await updateItem(id, payload);
+      const paid = payload.purchase_price !== '' && payload.purchase_price != null
+        ? Number(payload.purchase_price)
+        : null;
+      if (paid != null && item.market_price_median != null) {
+        const deal = classifyDeal(paid, item.market_price_median);
+        toast(deal.label, deal.profit != null && deal.profit < 0 ? 'error' : 'ok');
+      } else {
+        toast('Guardado', 'ok');
+      }
       navigate(`item/${id}`);
     } catch (err) {
       toast(err.message, 'error');
@@ -611,20 +688,30 @@ function paintMarketResult(host, result, item, hooks = {}) {
   const matches = Array.isArray(result.matches) ? result.matches : [];
 
   // —— Coincidencias automáticas (principal) ——
-  host.append(el('p', { className: 'market-step', text: 'Coincidencias encontradas' }));
+  const tcg = Boolean(result.tcg) || isTcgCardItem(item);
+  host.append(el('p', {
+    className: 'market-step',
+    text: tcg ? 'Coincidencias (referencia: TCGPlayer Market Price)' : 'Coincidencias encontradas'
+  }));
 
   if (result.auto && result.status === 'found' && matches.length) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
+      const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
       const chosen = result.chosenId === match.id
         || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
-      const row = el('article', { className: `market-match-card${chosen ? ' is-chosen' : ''}` }, [
+      const row = el('article', {
+        className: `market-match-card${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}`
+      }, [
         el('div', { className: 'market-match-main' }, [
           el('strong', { className: 'market-match-price', text: formatMoney(match.price, match.currency || currency) }),
+          isMarketRef
+            ? el('span', { className: 'market-ref-badge', text: 'Market Price' })
+            : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
             className: 'muted small',
-            text: [match.source, match.note].filter(Boolean).join(' · ')
+            text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
           })
         ]),
         el('div', { className: 'market-match-actions' }, [
@@ -641,7 +728,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
             ? el('button', {
               type: 'button',
               className: chosen ? 'btn btn-primary' : 'btn btn-ghost',
-              text: chosen ? '✓ Ideal' : (matches.length > 1 ? 'Usar este' : 'Guardar'),
+              text: chosen ? '✓ Ideal' : (isMarketRef ? 'Usar Market Price' : (matches.length > 1 ? 'Usar este' : 'Guardar')),
               onClick: (e) => hooks.onChooseMatch(match, matches, e.currentTarget)
             })
             : null
@@ -653,7 +740,9 @@ function paintMarketResult(host, result, item, hooks = {}) {
     if (matches.length > 1) {
       host.append(el('p', {
         className: 'muted small',
-        text: 'Hay varias similitudes. Elige la que corresponda a TU figura.'
+        text: tcg
+          ? 'Para cartas, la referencia es el Market Price de TCGPlayer. Elige esa si aparece.'
+          : 'Hay varias similitudes. Elige la que corresponda a TU figura.'
       }));
     }
   } else if (result.auto && result.status === 'empty') {
@@ -671,14 +760,15 @@ function paintMarketResult(host, result, item, hooks = {}) {
   }
 
   if (result.median != null || item?.purchase_price != null) {
+    const tcgRef = Boolean(result.tcg) || isTcgCardItem(item);
     host.append(el('div', { className: 'market-stats' }, [
       result.median != null
         ? el('div', { className: 'market-stat main' }, [
-          el('span', { className: 'market-stat-label', text: 'Tu estimado' }),
+          el('span', { className: 'market-stat-label', text: tcgRef ? 'Market Price' : 'Tu estimado' }),
           el('strong', { text: formatMoney(result.median, currency) })
         ])
         : el('div', { className: 'market-stat main' }, [
-          el('span', { className: 'market-stat-label', text: 'Tu estimado' }),
+          el('span', { className: 'market-stat-label', text: tcgRef ? 'Market Price' : 'Tu estimado' }),
           el('strong', { text: '—' })
         ]),
       item?.purchase_price != null

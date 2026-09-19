@@ -146,57 +146,164 @@ export function classifyDeal(purchasePrice, marketMedian) {
     return {
       code: 'unknown_purchase',
       label: 'Sin precio de compra',
-      detail: 'Guarda lo que pagaste para saber si fue buen trato.',
-      ratio: null
+      detail: 'Guarda lo que pagaste para ver si tienes ganancia.',
+      ratio: null,
+      profit: null
     };
   }
   if (!Number.isFinite(med) || med <= 0) {
     return {
       code: 'unknown_market',
-      label: 'Revisa vendidos',
-      detail: 'Abre eBay vendidos, mira 3–5 precios y guárdalos aquí.',
-      ratio: null
+      label: 'Falta precio de mercado',
+      detail: 'Busca el precio de mercado (o elige una coincidencia) para calcular ganancia.',
+      ratio: null,
+      profit: null
     };
   }
 
+  const profit = Math.round((med - buy) * 100) / 100;
   const ratio = buy / med;
-  if (ratio <= 0.75) {
+  const pct = Math.round(Math.abs(1 - ratio) * 100);
+
+  if (profit > 0.5) {
+    const tier = ratio <= 0.75 ? 'steal' : ratio <= 0.92 ? 'good' : 'fair';
     return {
-      code: 'steal',
-      label: 'Excelente precio',
-      detail: `Pagaste ~${Math.round((1 - ratio) * 100)}% bajo la mediana del mercado.`,
-      ratio
+      code: tier,
+      label: profit >= 1 ? `Ganancia ~$${profit.toFixed(2)}` : 'Ganancia pequeña',
+      detail: `Pagaste $${buy.toFixed(2)} y el mercado está ~$${med.toFixed(2)}. Si vendes cerca de la mediana, ganarías ~$${profit.toFixed(2)} (${pct}% a tu favor).`,
+      ratio,
+      profit
     };
   }
-  if (ratio <= 0.92) {
+  if (profit < -0.5) {
+    const loss = Math.abs(profit);
+    const tier = ratio <= 1.25 ? 'high' : 'expensive';
     return {
-      code: 'good',
-      label: 'Buen precio',
-      detail: 'Por debajo del precio típico de anuncios similares.',
-      ratio
-    };
-  }
-  if (ratio <= 1.08) {
-    return {
-      code: 'fair',
-      label: 'Precio justo',
-      detail: 'Cerca de la mediana del mercado.',
-      ratio
-    };
-  }
-  if (ratio <= 1.25) {
-    return {
-      code: 'high',
-      label: 'Un poco alto',
-      detail: 'Por encima de lo que suelen pedir por piezas parecidas.',
-      ratio
+      code: tier,
+      label: `Pérdida ~$${loss.toFixed(2)}`,
+      detail: `Pagaste $${buy.toFixed(2)} y el mercado está ~$${med.toFixed(2)}. Hoy estarías ~$${loss.toFixed(2)} por debajo (${pct}% arriba del mercado).`,
+      ratio,
+      profit
     };
   }
   return {
-    code: 'expensive',
-    label: 'Caro vs mercado',
-    detail: `Pagaste ~${Math.round((ratio - 1) * 100)}% más que la mediana.`,
-    ratio
+    code: 'fair',
+    label: 'Sin ganancia ni pérdida clara',
+    detail: `Pagaste $${buy.toFixed(2)} y el mercado (~$${med.toFixed(2)}) está casi igual.`,
+    ratio,
+    profit: 0
+  };
+}
+
+/** Alias claro para la UI */
+export function profitSummary(purchasePrice, marketMedian) {
+  return classifyDeal(purchasePrice, marketMedian);
+}
+
+const MARKET_CACHE_PREFIX = 'mi_coleccion_market_v1_';
+const MARKET_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * @param {string} itemId
+ */
+export function loadMarketCache(itemId) {
+  if (!itemId) return null;
+  try {
+    const raw = localStorage.getItem(MARKET_CACHE_PREFIX + itemId);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    const t = new Date(data.checkedAt || 0).getTime();
+    if (!Number.isFinite(t) || Date.now() - t > MARKET_CACHE_MS) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} itemId
+ * @param {object} result
+ */
+export function saveMarketCache(itemId, result) {
+  if (!itemId || !result) return;
+  try {
+    const payload = {
+      status: result.status || (result.matches?.length ? 'found' : 'empty'),
+      matches: result.matches || result.listings || [],
+      median: result.median ?? null,
+      low: result.low ?? null,
+      high: result.high ?? null,
+      currency: result.currency || 'USD',
+      query: result.query || '',
+      queries: result.queries || [],
+      note: result.note || '',
+      source: result.source || 'cache',
+      chosenId: result.chosenId || null,
+      checkedAt: result.checkedAt || new Date().toISOString(),
+      auto: true,
+      fromCache: true
+    };
+    localStorage.setItem(MARKET_CACHE_PREFIX + itemId, JSON.stringify(payload));
+  } catch {
+    // quota / private mode
+  }
+}
+
+/**
+ * @param {string} itemId
+ */
+export function clearMarketCache(itemId) {
+  if (!itemId) return;
+  try {
+    localStorage.removeItem(MARKET_CACHE_PREFIX + itemId);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Resultado listo desde DB + cache local (sin red).
+ * @param {object} item
+ * @param {{ imageUrl?: string|null }} [opts]
+ */
+export function getCachedMarketView(item, opts = {}) {
+  if (!item?.id) return null;
+  const ls = loadMarketCache(item.id);
+  const hasDb = item.market_price_median != null;
+  if (!ls && !hasDb) return null;
+
+  const base = buildInstantMarket(item, opts);
+  const median = item.market_price_median != null
+    ? Number(item.market_price_median)
+    : (ls?.median != null ? Number(ls.median) : null);
+  const matches = Array.isArray(ls?.matches) && ls.matches.length
+    ? ls.matches
+    : [];
+
+  return {
+    ...base,
+    ...ls,
+    status: matches.length ? 'found' : (median != null ? 'found' : (ls?.status || 'empty')),
+    matches,
+    median,
+    low: item.market_price_low != null ? Number(item.market_price_low) : (ls?.low ?? null),
+    high: item.market_price_high != null ? Number(item.market_price_high) : (ls?.high ?? null),
+    currency: item.market_currency || ls?.currency || 'USD',
+    sampleSize: item.market_sample_size || matches.length || 0,
+    query: item.market_query || ls?.query || base.query,
+    chosenId: ls?.chosenId || null,
+    source: 'cache',
+    label: 'Precio en caché',
+    auto: true,
+    fromCache: true,
+    instant: false,
+    checkedAt: item.market_checked_at || ls?.checkedAt || null,
+    deal: classifyDeal(item.purchase_price, median),
+    note: matches.length
+      ? `Usando búsqueda guardada (${matches.length} coincidencia${matches.length === 1 ? '' : 's'}). Pulsa “Buscar de nuevo” para actualizar.`
+      : (median != null
+        ? 'Usando precio guardado. Pulsa “Buscar de nuevo” para actualizar.'
+        : ls?.note || '')
   };
 }
 
@@ -375,6 +482,8 @@ export async function lookupMarketPrice(item, options = {}) {
     await persistMarket(item.id, result, result.query);
   }
 
+  if (item?.id) saveMarketCache(item.id, result);
+
   return result;
 }
 
@@ -428,7 +537,7 @@ export async function saveManualMarketPrice(item, median, extra = {}) {
     market_checked_at: new Date().toISOString()
   };
   await updateItem(item.id, payload);
-  return {
+  const out = {
     ...payload,
     source: 'manual',
     label: 'Estimado manual',
@@ -445,13 +554,25 @@ export async function saveManualMarketPrice(item, median, extra = {}) {
     checkedAt: payload.market_checked_at,
     note: 'Precio que guardaste tras revisar eBay / Japón.',
     fromCache: true,
-    instant: true
+    instant: true,
+    status: 'found',
+    matches: [],
+    auto: true
   };
+  saveMarketCache(item.id, {
+    ...loadMarketCache(item.id),
+    ...out,
+    matches: loadMarketCache(item.id)?.matches || [],
+    chosenId: extra.chosenId || loadMarketCache(item.id)?.chosenId || null
+  });
+  return out;
 }
 
 const MARKET_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function isMarketFresh(item) {
+  if (!item?.id) return false;
+  if (loadMarketCache(item.id)) return true;
   if (!item?.market_checked_at || item.market_price_median == null) return false;
   const t = new Date(item.market_checked_at).getTime();
   if (!Number.isFinite(t)) return false;

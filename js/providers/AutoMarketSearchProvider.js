@@ -131,15 +131,32 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
   matches = scoreAndSortMatches(matches, item).slice(0, limit);
 
+  const tcg = isTcgCardItem(item);
+  if (tcg) {
+    // Market Price primero en la lista
+    matches = [...matches].sort((a, b) => {
+      const aM = isTcgMarketPriceMatch(a) ? 1 : 0;
+      const bM = isTcgMarketPriceMatch(b) ? 1 : 0;
+      if (bM !== aM) return bM - aM;
+      return (b.score || 0) - (a.score || 0);
+    });
+  }
+
   const status = matches.length
     ? 'found'
     : (errors.length ? 'error' : 'empty');
 
   const primaryQuery = queries[0] || '';
-  const tcg = isTcgCardItem(item);
   const shopIds = tcg
     ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
     : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'tcgplayer', 'cardmarket'];
+
+  const ref = tcg ? pickTcgReferenceMatch(matches) : null;
+  const refPrice = ref?.price != null ? Number(ref.price) : null;
+  const median = refPrice != null && Number.isFinite(refPrice)
+    ? refPrice
+    : (matches.length ? pickMedian(matches.map((m) => m.price)) : null);
+
   return {
     status,
     matches,
@@ -148,9 +165,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     imageUrl,
     errors,
     tcg,
+    reference: tcg ? 'tcgplayer-market' : 'median',
+    referenceMatchId: ref?.id || null,
     sampleSize: matches.length,
     low: matches.length ? Math.min(...matches.map((m) => m.price)) : null,
-    median: matches.length ? pickMedian(matches.map((m) => m.price)) : null,
+    median,
     high: matches.length ? Math.max(...matches.map((m) => m.price)) : null,
     currency: 'USD',
     links: [
@@ -160,7 +179,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         : [])
     ],
     note: status === 'found'
-      ? `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`
+      ? (tcg
+        ? (ref
+          ? `Referencia: TCGPlayer Market Price $${Number(ref.price).toFixed(2)}. Elige la ideal si hay varias.`
+          : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Prefiere la de Market Price.`)
+        : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`)
       : !readGeminiApiKey()
         ? 'Para precios automáticos: Configuración → pega tu Gemini API key. Sin ella los marketplaces bloquean la lectura automática.'
       : status === 'empty'
@@ -243,7 +266,11 @@ export async function searchMarketWithGemini(item, opts) {
 
   const tcg = isTcgCardItem(item);
   const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'figures and collectibles'}).
-Search the LIVE web for current market prices${tcg ? ' prioritizing TCGPlayer market price, Cardmarket trend, and PriceCharting' : ' (eBay, Amazon, Mercari, AmiAmi, Yahoo Auctions JP)'}${tcg ? '. Also check eBay sold comps for the same card (set + number).' : '.'}
+${tcg
+    ? `For TCG cards, the PRIMARY reference price is TCGPlayer "Market Price" (NOT Low Price, NOT Mid listing, NOT listed asking price).
+Search TCGPlayer first and return the Market Price for the exact card (same set + collector number + finish/foil when visible).
+You may also include Cardmarket trend / PriceCharting as secondary options, clearly labeled.`
+    : 'Search the LIVE web for current asking/sold prices (eBay, Amazon, Mercari, AmiAmi, Yahoo Auctions JP).'}
 
 Item data:
 ${meta || '(minimal data)'}
@@ -255,22 +282,26 @@ Return ONLY valid JSON (no markdown) with this shape:
   "found": true|false,
   "matches": [
     {
-      "title": "listing or product title",
+      "title": "card/product title including set/number if card",
       "price": 49.99,
       "currency": "USD",
       "source": "${tcg ? 'tcgplayer|cardmarket|pricecharting|ebay|other' : 'ebay|amazon|mercari|amiami|yahoo|tcgplayer|cardmarket|other'}",
+      "priceType": "${tcg ? 'market|low|mid|listing|estimate' : 'listing|estimate'}",
       "url": "https://...",
       "note": "short why it matches"
     }
   ]
 }
 Rules:
-- price must be a number in USD when possible (convert EUR/JPY if needed; note original).
-- Include 1–8 real matches if found; empty array if none.
+- price must be a number in USD when possible (convert EUR if needed; note original).
+- Include 1–8 matches if found; empty array if none.
 - Do NOT invent URLs; omit url if unknown.
-- If multiple variants/conditions/foil/editions exist, include several so the user can pick the ideal one.
-${tcg ? '- Prefer Near Mint market price when available; label condition in note.' : ''}
-- If live listings are unavailable, still return 2–5 realistic secondary-market USD price options (label note as "estimado de mercado").`;
+${tcg
+    ? `- CRITICAL: at least one match MUST be TCGPlayer Market Price when available, with "source":"tcgplayer" and "priceType":"market" and note "TCGPlayer Market Price".
+- Prefer Near Mint Market Price; put foil / alternate art as separate matches.
+- Do NOT use Low Price as the main reference.`
+    : '- If multiple variants exist, include several so the user can pick the ideal one.'}
+- If live data is unavailable, return 2–5 realistic estimates and set priceType to "estimate".`;
 
   const parts = [{ text: prompt }];
 
@@ -356,12 +387,54 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
       price,
       currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
       source: String(m.source || 'web'),
+      priceType: String(m.priceType || inferPriceType(m)).toLowerCase(),
       url: typeof m.url === 'string' && m.url.startsWith('http') ? m.url : undefined,
       query: searchHint,
-      note: m.note ? String(m.note) : 'Encontrado por búsqueda web (IA)'
+      note: m.note
+        ? String(m.note)
+        : (String(m.priceType || '').toLowerCase() === 'market'
+          ? 'TCGPlayer Market Price'
+          : 'Encontrado por búsqueda web (IA)')
     });
   }
   return out;
+}
+
+function inferPriceType(m) {
+  const blob = `${m?.note || ''} ${m?.title || ''} ${m?.source || ''}`.toLowerCase();
+  if (/market\s*price|precio\s*(de\s*)?mercado/.test(blob)) return 'market';
+  if (/\blow\b|lowest/.test(blob)) return 'low';
+  if (/\bmid\b|median/.test(blob)) return 'mid';
+  if (/estimad|estimate/.test(blob)) return 'estimate';
+  return 'listing';
+}
+
+/** True si el match es el Market Price de TCGPlayer (referencia). */
+export function isTcgMarketPriceMatch(m) {
+  if (!m) return false;
+  const type = String(m.priceType || '').toLowerCase();
+  const note = `${m.note || ''} ${m.title || ''}`.toLowerCase();
+  const fromTcg = String(m.source || '').toLowerCase() === 'tcgplayer';
+  if (type === 'market' && (fromTcg || /tcgplayer/.test(note))) return true;
+  if (fromTcg && /market\s*price|precio\s*(de\s*)?mercado/.test(note)) return true;
+  return false;
+}
+
+/**
+ * Elige la coincidencia de referencia TCG: Market Price TCGPlayer.
+ * @param {MarketMatch[]} matches
+ */
+export function pickTcgReferenceMatch(matches) {
+  const list = matches || [];
+  const market = list.filter(isTcgMarketPriceMatch);
+  if (market.length) {
+    return [...market].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  }
+  const tcg = list.filter((m) => String(m.source || '').toLowerCase() === 'tcgplayer');
+  if (tcg.length) {
+    return [...tcg].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  }
+  return list[0] || null;
 }
 
 async function fetchImageAsInlinePart(imageUrl) {
@@ -430,7 +503,9 @@ export function scoreAndSortMatches(matches, item) {
       for (const t of tokens) {
         if (title.includes(t.toLowerCase())) score += 2;
       }
-      if (m.source === 'ebay' || m.source === 'tcgplayer' || m.source === 'cardmarket') score += 1;
+      if (m.source === 'tcgplayer') score += 2;
+      if (m.source === 'ebay' || m.source === 'cardmarket') score += 1;
+      if (isTcgMarketPriceMatch(m)) score += 5;
       if (m.url) score += 0.5;
       return { ...m, score };
     })
@@ -438,7 +513,7 @@ export function scoreAndSortMatches(matches, item) {
 }
 
 async function searchPricesViaWebIndex(query, limit = 8) {
-  const qCard = encodeURIComponent(`${query} TCGPlayer price`);
+  const qCard = encodeURIComponent(`${query} TCGPlayer "Market Price"`);
   const qFig = encodeURIComponent(`${query} figure price ebay OR amazon`);
   const targets = [
     `https://r.jina.ai/http://www.bing.com/search?q=${qCard}`,

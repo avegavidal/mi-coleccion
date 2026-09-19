@@ -452,6 +452,27 @@ test('CSS cropper overlay existe', () => {
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
 
+test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {
+  const ref = autoM.pickTcgReferenceMatch([
+    { id: 'a', title: 'Charizard Low', price: 10, source: 'tcgplayer', priceType: 'low', note: 'Low Price' },
+    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' },
+    { id: 'c', title: 'Charizard eBay', price: 55, source: 'ebay', priceType: 'listing' }
+  ]);
+  assert(ref.id === 'b');
+  assert(autoM.isTcgMarketPriceMatch(ref));
+});
+
+test('parseGeminiMarketMatches conserva priceType market', () => {
+  const m = autoM.parseGeminiMarketMatches(JSON.stringify({
+    found: true,
+    matches: [
+      { title: 'Pikachu 025', price: 3.5, currency: 'USD', source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' }
+    ]
+  }));
+  assert(m[0].priceType === 'market');
+  assert(autoM.isTcgMarketPriceMatch(m[0]));
+});
+
 test('parseGeminiMarketMatches lee JSON con varias opciones', () => {
   const text = `{
     "found": true,

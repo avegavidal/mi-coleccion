@@ -1180,6 +1180,69 @@ a.stat-card:active {
   gap: 8px;
 }
 
+.market-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.market-toolbar .status-line {
+  flex: 1;
+  margin: 0;
+}
+
+.market-profit {
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.market-profit strong {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.market-profit p {
+  margin: 4px 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.market-profit.is-gain {
+  background: var(--accent-soft);
+  border-color: rgba(15, 118, 110, 0.35);
+}
+
+.market-profit.is-loss {
+  background: var(--danger-soft);
+  border-color: rgba(232, 144, 136, 0.35);
+}
+
+.market-profit.is-even {
+  background: var(--bg-2);
+}
+
+.market-match-card.is-market-ref {
+  border-color: var(--accent);
+}
+
+.market-ref-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+
 .market-match-list {
   display: flex;
   flex-direction: column;
