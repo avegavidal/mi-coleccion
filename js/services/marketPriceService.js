@@ -1,4 +1,5 @@
 import { EbayActiveProvider } from '../providers/EbayActiveProvider.js';
+import { autoSearchMarketMatches } from '../providers/AutoMarketSearchProvider.js';
 import {
   buildMarketLinks,
   buildShopLinksForQuery,
@@ -298,22 +299,54 @@ export function buildInstantMarket(item, opts = {}) {
 }
 
 /**
- * Instantáneo por defecto. Scrape solo con options.scrape (timeout 2.5s).
+ * Búsqueda AUTOMÁTICA de precios (Gemini web + eBay). Devuelve matches seleccionables.
  * @param {object} item
- * @param {{ query?: string, persist?: boolean, scrape?: boolean }} [options]
+ * @param {{ query?: string, persist?: boolean, scrape?: boolean, imageUrl?: string|null, onProgress?: Function }} [options]
  */
 export async function lookupMarketPrice(item, options = {}) {
   const baseItem = options.query
     ? { ...item, name: options.query, market_query: options.query }
     : item;
-  const result = buildInstantMarket(baseItem);
 
-  if (options.scrape) {
+  const imageUrl = options.imageUrl || null;
+  const auto = await autoSearchMarketMatches(baseItem, {
+    imageUrl,
+    onProgress: options.onProgress,
+    limit: 12
+  });
+
+  const result = {
+    ...buildInstantMarket(baseItem, { imageUrl }),
+    source: auto.matches.some((m) => m.source === 'ebay') ? 'auto-ebay' : 'auto-search',
+    label: auto.status === 'found' ? 'Coincidencias de mercado' : 'Sin coincidencias automáticas',
+    status: auto.status,
+    matches: auto.matches,
+    listings: auto.matches.map((m) => ({
+      title: m.title,
+      price: m.price,
+      currency: m.currency,
+      url: m.url || ''
+    })),
+    sampleSize: auto.sampleSize,
+    low: auto.low,
+    median: auto.median,
+    high: auto.high,
+    currency: auto.currency || 'USD',
+    note: auto.note,
+    errors: auto.errors,
+    deal: classifyDeal(item?.purchase_price, auto.median),
+    checkedAt: new Date().toISOString(),
+    instant: false,
+    auto: true
+  };
+
+  // Fallback scrape explícito (legacy)
+  if (options.scrape && (!auto.matches || !auto.matches.length)) {
     try {
       const query = result.query || buildMarketQuery(item);
       const live = await Promise.race([
         new EbayActiveProvider().lookup({ query, limit: 8 }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
       ]);
       if (live?.median != null) {
         result.source = live.source;
@@ -326,18 +359,27 @@ export async function lookupMarketPrice(item, options = {}) {
         result.listings = live.listings || [];
         result.note = live.note;
         result.deal = classifyDeal(item?.purchase_price, live.median);
-        result.checkedAt = new Date().toISOString();
-        result.instant = false;
-        if (options.persist && item?.id) {
-          await persistMarket(item.id, result, query);
-        }
+        result.status = (live.listings || []).length || live.median != null ? 'found' : 'empty';
       }
     } catch {
-      // Mantener instantáneo
+      // mantener auto result
     }
   }
 
+  if (options.persist && item?.id && result.median != null && auto.matches.length === 1) {
+    await persistMarket(item.id, result, result.query);
+  }
+
   return result;
+}
+
+/** Alias claro para la UI */
+export async function ensureMarketPrice(item, opts = {}) {
+  const hasPhoto = Boolean(opts.imageUrl);
+  if (!buildMarketQuery(item) && item?.market_price_median == null && !hasPhoto) {
+    throw new Error('Agrega una foto o algunos datos (marca, serie, personaje) para buscar precio');
+  }
+  return lookupMarketPrice(item, opts);
 }
 
 async function persistMarket(itemId, result, query) {
@@ -409,13 +451,4 @@ export function isMarketFresh(item) {
   const t = new Date(item.market_checked_at).getTime();
   if (!Number.isFinite(t)) return false;
   return Date.now() - t < MARKET_FRESH_MS;
-}
-
-/** Instantáneo: sin red. Foto + datos sueltos; no exige nombre exacto. */
-export async function ensureMarketPrice(item, opts = {}) {
-  const hasPhoto = Boolean(opts.imageUrl);
-  if (!buildMarketQuery(item) && item?.market_price_median == null && !hasPhoto) {
-    throw new Error('Agrega una foto o algunos datos (marca, serie, personaje) para buscar precio');
-  }
-  return buildInstantMarket(item, opts);
 }

@@ -1,4 +1,5 @@
-import { el, emptyState, toast, setBusy, compressImage, imageTypeLabel, formatMoney, formatDate } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatDate } from '../utils/dom.js';
+import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { itemCard } from './dashboard.js';
 import {
   listItems, listCollections, createItem, getItem, updateItem,
@@ -8,6 +9,7 @@ import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from '../services/imageService.js';
 import {
   buildInstantMarket,
+  lookupMarketPrice,
   saveManualMarketPrice
 } from '../services/marketPriceService.js';
 import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
@@ -85,7 +87,7 @@ export async function renderAdd(root, params = []) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Agregar pieza' }),
-      el('p', { className: 'page-sub', text: 'Toma la foto: intentamos rellenar el nombre solos.' })
+      el('p', { className: 'page-sub', text: 'Toma la foto, recorta la figura y rellenamos el nombre.' })
     ]),
     el('form', { id: 'add-form', className: 'stack-form' }, [
       el('div', { className: 'photo-capture-block' }, [
@@ -179,7 +181,15 @@ export async function renderAdd(root, params = []) {
 
   const setPhoto = async (file) => {
     if (!file) return;
-    photoFile = await compressImage(file);
+    let prepared;
+    try {
+      prepared = await prepareImageForAnalysis(file, { cropTitle: 'Recortar figura' });
+      if (!prepared) return;
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+    photoFile = prepared;
     preview.innerHTML = '';
     const img = el('img', { alt: 'Vista previa' });
     img.src = URL.createObjectURL(photoFile);
@@ -211,8 +221,16 @@ export async function renderAdd(root, params = []) {
     }
   };
 
-  root.querySelector('#cam').addEventListener('change', (e) => setPhoto(e.target.files?.[0]));
-  root.querySelector('#gallery').addEventListener('change', (e) => setPhoto(e.target.files?.[0]));
+  root.querySelector('#cam').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    setPhoto(f);
+  });
+  root.querySelector('#gallery').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    setPhoto(f);
+  });
 
   if (prefillPhoto) {
     window.__pendingIdentifyFile = null;
@@ -303,8 +321,9 @@ export async function renderItemDetail(root, params) {
     el('section', { className: 'market-panel', id: 'market-panel' }, [
       el('div', { className: 'market-panel-head' }, [
         el('h2', { text: 'Precio de mercado' }),
-        el('p', { className: 'page-sub', text: 'Por foto · si hay varias parecidas, elige la ideal' })
+        el('p', { className: 'page-sub', text: 'Búsqueda automática · elige la coincidencia ideal' })
       ]),
+      el('div', { id: 'market-status', className: 'status-line muted', text: 'Buscando precios…' }),
       el('div', { id: 'market-body', className: 'market-body' }),
       el('div', { className: 'market-actions', id: 'market-actions' })
     ]),
@@ -317,6 +336,7 @@ export async function renderItemDetail(root, params) {
 
   const marketBody = root.querySelector('#market-body');
   const marketActions = root.querySelector('#market-actions');
+  const marketStatus = root.querySelector('#market-status');
   const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
   const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
     const ia = preferTypes.indexOf(a.image_type);
@@ -326,16 +346,83 @@ export async function renderItemDetail(root, params) {
   const photoPath = sortedImgs[0]?.storage_path;
   const imageUrl = photoPath ? (urls[photoPath] || null) : null;
 
-  const refreshMarket = () => {
-    paintMarketResult(marketBody, buildInstantMarket(item, { imageUrl }), item, {
+  /** @type {object|null} */
+  let lastMarketResult = null;
+
+  const applyChosenMatch = async (match, allMatches) => {
+    try {
+      setBusy(true);
+      const prices = (allMatches || []).map((m) => Number(m.price)).filter((n) => Number.isFinite(n) && n > 0);
+      const saved = await saveManualMarketPrice(item, match.price, {
+        low: prices.length ? Math.min(...prices) : match.price,
+        high: prices.length ? Math.max(...prices) : match.price,
+        sampleSize: Math.max(1, prices.length),
+        query: match.title || match.query || item.name,
+        currency: match.currency || 'USD'
+      });
+      Object.assign(item, {
+        market_price_median: saved.median,
+        market_price_low: saved.low,
+        market_price_high: saved.high,
+        market_currency: saved.currency,
+        market_source: match.source || 'auto',
+        market_checked_at: saved.checkedAt,
+        market_sample_size: saved.sampleSize,
+        market_query: saved.query
+      });
+      if (lastMarketResult) {
+        lastMarketResult.median = saved.median;
+        lastMarketResult.low = saved.low;
+        lastMarketResult.high = saved.high;
+        lastMarketResult.chosenId = match.id;
+      }
+      paintMarketResult(marketBody, lastMarketResult || buildInstantMarket(item, { imageUrl }), item, {
+        onChooseMatch: applyChosenMatch
+      });
+      paintMarketCandidates(marketActions, item, imageUrl, () => {});
+      toast('Precio ideal guardado', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshMarket = (result) => {
+    lastMarketResult = result;
+    paintMarketResult(marketBody, result, item, {
+      onChooseMatch: applyChosenMatch,
       onAddCandidatePrice: (preset) => {
         addMarketCandidate(item.id, preset);
-        paintMarketCandidates(marketActions, item, imageUrl, refreshMarket);
+        paintMarketCandidates(marketActions, item, imageUrl, () => refreshMarket(lastMarketResult || buildInstantMarket(item, { imageUrl })));
       }
     });
-    paintMarketCandidates(marketActions, item, imageUrl, refreshMarket);
+    paintMarketCandidates(marketActions, item, imageUrl, () => refreshMarket(lastMarketResult || buildInstantMarket(item, { imageUrl })));
   };
-  refreshMarket();
+
+  // Mostrar esqueleto + buscar automático
+  refreshMarket(buildInstantMarket(item, { imageUrl }));
+  marketStatus.textContent = 'Buscando precios automáticamente…';
+
+  lookupMarketPrice(item, {
+    imageUrl,
+    onProgress: (p) => {
+      if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
+    }
+  }).then((result) => {
+    refreshMarket(result);
+    if (result.status === 'found') {
+      marketStatus.textContent = result.matches?.length > 1
+        ? `Encontré ${result.matches.length} coincidencias — elige la ideal`
+        : 'Encontré 1 coincidencia';
+    } else if (result.status === 'empty') {
+      marketStatus.textContent = 'Sin coincidencias automáticas';
+    } else {
+      marketStatus.textContent = result.note || 'No se pudo completar la búsqueda automática';
+    }
+  }).catch((err) => {
+    marketStatus.textContent = err.message || 'Error al buscar precio';
+  });
 
   const gallery = root.querySelector('#gallery');
   if (!item.item_images?.length) {
@@ -455,12 +542,14 @@ export async function renderEdit(root, params) {
 
   root.querySelector('#add-photo').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     const status = root.querySelector('#photo-status');
     try {
-      const compressed = await compressImage(file);
+      const prepared = await prepareImageForAnalysis(file, { cropTitle: 'Recortar fotografía' });
+      if (!prepared) return;
       status.textContent = 'Procesando…';
-      await uploadItemImage(id, compressed, root.querySelector('#img-type').value, (p) => {
+      await uploadItemImage(id, prepared, root.querySelector('#img-type').value, (p) => {
         status.textContent = p.message || p.stage;
       });
       toast('Fotografía agregada', 'ok');
@@ -511,82 +600,73 @@ export async function renderDuplicates(root) {
  * @param {HTMLElement} host
  * @param {object} result
  * @param {object} item
- * @param {{ onAddCandidatePrice?: (preset: { price?: string, label?: string }) => void }} [hooks]
+ * @param {{ onAddCandidatePrice?: Function, onChooseMatch?: Function }} [hooks]
  */
 function paintMarketResult(host, result, item, hooks = {}) {
   if (!host) return;
   host.innerHTML = '';
   const currency = result.currency || 'USD';
   const deal = result.deal || {};
+  const matches = Array.isArray(result.matches) ? result.matches : [];
 
-  const visual = result.visualLinks?.length
-    ? result.visualLinks
-    : (result.links || []).filter((l) => l.kind === 'visual' || l.region === 'VIS');
+  // —— Coincidencias automáticas (principal) ——
+  host.append(el('p', { className: 'market-step', text: 'Coincidencias encontradas' }));
 
-  if (visual.length) {
-    const primaryKids = [
-      el('p', { className: 'market-step', text: 'Paso 1 — identifica por la foto' })
-    ];
-    if (result.imageUrl) {
-      primaryKids.push(el('img', {
-        className: 'market-photo-preview',
-        src: result.imageUrl,
-        alt: 'Foto usada para buscar precio',
-        loading: 'lazy'
-      }));
-    }
-    for (const link of visual) {
-      primaryKids.push(el('a', {
-        className: 'btn btn-primary btn-block market-photo-btn',
-        href: link.url,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        text: link.label
-      }));
-    }
-    primaryKids.push(el('p', {
-      className: 'muted small',
-      text: visual[0]?.hint || 'Lens encuentra la figura aunque el nombre esté incompleto.'
-    }));
-    host.append(el('div', { className: 'market-primary' }, primaryKids));
-  } else {
-    host.append(el('p', {
-      className: 'muted',
-      text: 'Sin foto en esta pieza: agrega una imagen para buscar precio por foto.'
-    }));
-  }
-
-  const groups = result.queryGroups?.length
-    ? result.queryGroups
-    : (result.query ? [{ query: result.query, links: (result.links || []).filter((l) => l.kind !== 'visual') }] : []);
-
-  if (groups.length) {
-    host.append(el('p', { className: 'market-step', text: 'Paso 2 — búsquedas amplias (no el nombre exacto)' }));
-    for (const group of groups) {
-      const box = el('div', { className: 'market-query-group' }, [
-        el('p', { className: 'market-query-label', text: `“${group.query}”` }),
-        el('div', { className: 'market-query-links' },
-          (group.links || []).map((link) =>
-            el('a', {
-              className: 'market-chip',
-              href: link.url,
+  if (result.auto && result.status === 'found' && matches.length) {
+    const list = el('div', { className: 'market-match-list' });
+    for (const match of matches) {
+      const chosen = result.chosenId === match.id
+        || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
+      const row = el('article', { className: `market-match-card${chosen ? ' is-chosen' : ''}` }, [
+        el('div', { className: 'market-match-main' }, [
+          el('strong', { className: 'market-match-price', text: formatMoney(match.price, match.currency || currency) }),
+          el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
+          el('p', {
+            className: 'muted small',
+            text: [match.source, match.note].filter(Boolean).join(' · ')
+          })
+        ]),
+        el('div', { className: 'market-match-actions' }, [
+          match.url
+            ? el('a', {
+              className: 'btn btn-ghost',
+              href: match.url,
               target: '_blank',
               rel: 'noopener noreferrer',
-              text: link.label
+              text: 'Ver'
             })
-          )
-        ),
-        hooks.onAddCandidatePrice
-          ? el('button', {
-            type: 'button',
-            className: 'btn btn-ghost btn-block market-note-btn',
-            text: 'Anotar precio de una parecida…',
-            onClick: () => hooks.onAddCandidatePrice({ label: group.query, price: '' })
-          })
-          : null
+            : null,
+          hooks.onChooseMatch
+            ? el('button', {
+              type: 'button',
+              className: chosen ? 'btn btn-primary' : 'btn btn-ghost',
+              text: chosen ? '✓ Ideal' : (matches.length > 1 ? 'Usar este' : 'Guardar'),
+              onClick: () => hooks.onChooseMatch(match, matches)
+            })
+            : null
+        ])
       ]);
-      host.append(box);
+      list.append(row);
     }
+    host.append(list);
+    if (matches.length > 1) {
+      host.append(el('p', {
+        className: 'muted small',
+        text: 'Hay varias similitudes. Elige la que corresponda a TU figura.'
+      }));
+    }
+  } else if (result.auto && result.status === 'empty') {
+    host.append(el('div', { className: 'notice notice-warn' }, [
+      el('p', { text: 'No encontré coincidencias automáticas con precio.' }),
+      el('p', { className: 'muted small', text: result.note || 'Prueba mejorando marca/serie/personaje o usa un buscador abajo.' })
+    ]));
+  } else if (result.auto && result.status === 'error') {
+    host.append(el('div', { className: 'notice notice-warn' }, [
+      el('p', { text: 'La búsqueda automática no pudo leer el mercado ahora.' }),
+      el('p', { className: 'muted small', text: result.note || '' })
+    ]));
+  } else if (!result.auto) {
+    host.append(el('p', { className: 'muted small', text: 'Preparando búsqueda automática…' }));
   }
 
   if (result.median != null || item?.purchase_price != null) {
@@ -612,11 +692,56 @@ function paintMarketResult(host, result, item, hooks = {}) {
       className: `market-deal deal-${deal.code || 'unknown'}`
     }, [
       el('strong', { text: deal.label || 'Sin veredicto' }),
-      el('p', { text: deal.detail || 'Guarda un estimado tras mirar Lens / eBay.' })
+      el('p', { text: deal.detail || 'Elige una coincidencia o anota un precio.' })
     ]));
   }
 
-  if (result.note) {
+  // —— Fallback manual (secundario, colapsado) ——
+  const details = el('details', { className: 'market-fallback' }, [
+    el('summary', { text: 'Abrir buscadores manualmente (opcional)' })
+  ]);
+
+  const visual = result.visualLinks?.length
+    ? result.visualLinks
+    : (result.links || []).filter((l) => l.kind === 'visual' || l.region === 'VIS');
+
+  if (visual.length) {
+    const box = el('div', { className: 'market-primary' });
+    for (const link of visual) {
+      box.append(el('a', {
+        className: 'btn btn-ghost btn-block',
+        href: link.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: link.label
+      }));
+    }
+    details.append(box);
+  }
+
+  const groups = result.queryGroups?.length
+    ? result.queryGroups
+    : (result.query ? [{ query: result.query, links: (result.links || []).filter((l) => l.kind !== 'visual') }] : []);
+
+  for (const group of groups) {
+    details.append(el('div', { className: 'market-query-group' }, [
+      el('p', { className: 'market-query-label', text: `“${group.query}”` }),
+      el('div', { className: 'market-query-links' },
+        (group.links || []).map((link) =>
+          el('a', {
+            className: 'market-chip',
+            href: link.url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            text: link.label
+          })
+        )
+      )
+    ]));
+  }
+  host.append(details);
+
+  if (result.note && result.auto) {
     host.append(el('p', { className: 'muted small', text: result.note }));
   }
 }

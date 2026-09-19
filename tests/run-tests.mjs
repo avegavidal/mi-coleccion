@@ -157,6 +157,8 @@ const required = [
   'js/providers/MarketPriceProvider.js',
   'js/providers/EbayLinkProvider.js',
   'js/providers/EbayActiveProvider.js',
+  'js/providers/AutoMarketSearchProvider.js',
+  'js/utils/imageCrop.js',
   'js/screens/categories.js',
   'sql/schema.sql',
   'assets/icons/icon-192.png',
@@ -363,12 +365,174 @@ test('market service no usa Mercado Libre', () => {
   assert(!existsSync(join(root, 'js/providers/MercadoLibreProvider.js')));
 });
 
+console.log('\n=== Recorte de imagen (anti-ruido) ===');
+const crop = await import(pathToFileURL(join(root, 'js/utils/imageCrop.js')).href);
+
+test('defaultCenterCrop centra y cabe en la imagen', () => {
+  const r = crop.defaultCenterCrop(1000, 800, 0.7);
+  assert(r.w > 0 && r.h > 0);
+  assert(r.x >= 0 && r.y >= 0);
+  assert(r.x + r.w <= 1000);
+  assert(r.y + r.h <= 800);
+  assert(Math.abs(r.x - (1000 - r.w) / 2) <= 1);
+});
+
+test('clampRect no sale de bounds y respeta minSide', () => {
+  const r = crop.clampRect({ x: -50, y: 900, w: 2000, h: 10 }, { w: 500, h: 400 }, 40);
+  assert(r.x >= 0 && r.y >= 0);
+  assert(r.x + r.w <= 500);
+  assert(r.y + r.h <= 400);
+  assert(r.w >= 40 && r.h >= 40);
+});
+
+test('containLayout letterbox horizontal', () => {
+  const L = crop.containLayout(2000, 1000, 400, 400);
+  assert(Math.abs(L.w - 400) < 0.01);
+  assert(Math.abs(L.h - 200) < 0.01);
+  assert(Math.abs(L.top - 100) < 0.01);
+  assert(Math.abs(L.left) < 0.01);
+});
+
+test('displayRectToNatural roundtrip aprox', () => {
+  const natural = { w: 1000, h: 800 };
+  const layout = crop.containLayout(1000, 800, 500, 400);
+  const nat = crop.defaultCenterCrop(1000, 800, 0.5);
+  const disp = crop.naturalRectToDisplay(nat, layout);
+  const back = crop.displayRectToNatural(disp, layout, natural, 32);
+  assert(Math.abs(back.x - nat.x) <= 2, `x ${back.x} vs ${nat.x}`);
+  assert(Math.abs(back.y - nat.y) <= 2, `y ${back.y} vs ${nat.y}`);
+  assert(Math.abs(back.w - nat.w) <= 2, `w ${back.w} vs ${nat.w}`);
+  assert(Math.abs(back.h - nat.h) <= 2, `h ${back.h} vs ${nat.h}`);
+});
+
+test('recortar región central reduce área vs original', () => {
+  const full = { w: 1200, h: 900 };
+  const c = crop.defaultCenterCrop(full.w, full.h, 0.6);
+  assert(c.w * c.h < full.w * full.h * 0.55, 'el recorte debe ser claramente más chico');
+});
+
+test('varios tamaños de foto (retrato/paisaje/cuadrado)', () => {
+  for (const [w, h] of [[800, 1200], [1600, 900], [1024, 1024], [320, 240]]) {
+    const r = crop.defaultCenterCrop(w, h, 0.72);
+    assert(r.x + r.w <= w && r.y + r.h <= h, `${w}x${h}`);
+    const L = crop.containLayout(w, h, 390, 520);
+    assert(L.scale > 0 && L.w <= 390 + 0.01 && L.h <= 520 + 0.01);
+  }
+});
+
+test('identify/collection usan prepareImageForAnalysis', () => {
+  const idSrc = readFileSync(join(root, 'js/screens/identify.js'), 'utf8');
+  const colSrc = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/prepareImageForAnalysis/.test(idSrc));
+  assert(/prepareImageForAnalysis/.test(colSrc));
+  assert(/openImageCropper|prepareImageForAnalysis/.test(idSrc));
+  assert(!/compressImage\(file\)/.test(idSrc), 'identify no debe comprimir sin recorte');
+});
+
+test('CSS cropper overlay existe', () => {
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.cropper-overlay/.test(css));
+  assert(/\.cropper-box/.test(css));
+  assert(/\.cropper-handle/.test(css));
+});
+
+console.log('\n=== Búsqueda automática de mercado ===');
+const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
+
+test('parseGeminiMarketMatches lee JSON con varias opciones', () => {
+  const text = `{
+    "found": true,
+    "matches": [
+      {"title": "Nendoroid Link Twilight Princess", "price": 52.5, "currency": "USD", "source": "ebay", "note": "sold similar"},
+      {"title": "Nendoroid Link BOTW", "price": 48, "currency": "USD", "source": "amazon"},
+      {"title": "fake", "price": 0, "currency": "USD"}
+    ]
+  }`;
+  const m = autoM.parseGeminiMarketMatches(text, 'Nendoroid Link');
+  assert(m.length === 2);
+  assert(m[0].price === 52.5);
+  assert(m[1].title.includes('BOTW'));
+});
+
+test('parseGeminiMarketMatches tolera markdown fence', () => {
+  const text = "```json\n{\"found\":true,\"matches\":[{\"title\":\"figma Marth\",\"price\":60,\"currency\":\"USD\",\"source\":\"ebay\"}]}\n```";
+  const m = autoM.parseGeminiMarketMatches(text);
+  assert(m.length === 1 && m[0].price === 60);
+});
+
+test('mergeMatches deduplica título+precio', () => {
+  const a = [{ id: '1', title: 'Nendoroid Link', price: 40, currency: 'USD', source: 'ebay' }];
+  const b = [
+    { id: '2', title: 'Nendoroid Link', price: 40, currency: 'USD', source: 'web' },
+    { id: '3', title: 'Nendoroid Link BOTW', price: 55, currency: 'USD', source: 'ebay' }
+  ];
+  const m = autoM.mergeMatches(a, b);
+  assert(m.length === 2, String(m.length));
+});
+
+test('scoreAndSortMatches prioriza título relevante', () => {
+  const ranked = autoM.scoreAndSortMatches([
+    { id: 'a', title: 'Random Barbie Doll', price: 20, currency: 'USD', source: 'web' },
+    { id: 'b', title: 'Nendoroid Link Zelda Good Smile', price: 45, currency: 'USD', source: 'ebay' },
+    { id: 'c', title: 'Link keychain', price: 10, currency: 'USD', source: 'web' }
+  ], { name: 'Nendoroid Link', series: 'Nendoroid', character_name: 'Link', manufacturer: 'Good Smile' });
+  assert(ranked[0].id === 'b', ranked.map((x) => x.id).join(','));
+});
+
+test('extractEbayPrices lee HTML clásico', () => {
+  const html = '<span class="s-item__price">$24.99</span><span class="s-item__price">US $31.00</span>';
+  const prices = autoM.extractEbayPrices(html);
+  assert(prices.includes(24.99) && prices.includes(31));
+});
+
+test('lookupMarketPrice exporta auto search', async () => {
+  const src = readFileSync(join(root, 'js/services/marketPriceService.js'), 'utf8');
+  assert(/autoSearchMarketMatches/.test(src));
+  assert(/ensureMarketPrice/.test(src));
+  // no debe haber dos ensureMarketPrice
+  const count = (src.match(/export async function ensureMarketPrice/g) || []).length;
+  assert(count === 1, `ensureMarketPrice count=${count}`);
+});
+
+test('collection usa lookupMarketPrice automático', () => {
+  const src = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/lookupMarketPrice\(item/.test(src));
+  assert(/onChooseMatch/.test(src));
+  assert(/market-match-card|Usar este/.test(src));
+});
+
+test('AutoMarketSearchProvider existe en integridad', () => {
+  assert(existsSync(join(root, 'js/providers/AutoMarketSearchProvider.js')));
+});
+
+await testAsync('autoSearch sin key responde empty/error estructurado', async () => {
+  globalThis.APP_CONFIG = { GEMINI_API_KEY: '', MARKET_REGIONS: 'US,JP,VIS' };
+  const result = await autoM.autoSearchMarketMatches({
+    name: 'Nendoroid Link Twilight Princess Exclusive Edition',
+    manufacturer: 'Good Smile',
+    series: 'Nendoroid',
+    character_name: 'Link',
+    item_number: '563'
+  }, { limit: 6 });
+  assert(['found', 'empty', 'error'].includes(result.status), result.status);
+  assert(Array.isArray(result.matches));
+  assert(Array.isArray(result.queries) && result.queries.length >= 1);
+  // Si encontró, debe poder elegirse; si no, note presente
+  if (result.status === 'found') assert(result.matches.length >= 1 && result.matches[0].price > 0);
+  else assert(result.note);
+  console.log(`    → live status=${result.status} matches=${result.matches.length} queries=${result.queries.join(' | ')}`);
+});
+
 console.log(`\n==============================`);
 console.log(`Resultado: ${passed} passed, ${failed} failed`);
 console.log(`Cobertura estimada de checks: ${Math.round((passed / (passed + failed)) * 100)}%`);
 if (failed) {
   console.log('\nFallos:');
   for (const f of failures) console.log(` - ${f.name}: ${f.err}`);
+  process.exit(1);
+}
+if (passed / (passed + failed) < 0.98) {
+  console.log('Confianza < 98%');
   process.exit(1);
 }
 process.exit(0);

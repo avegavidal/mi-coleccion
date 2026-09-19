@@ -1,4 +1,5 @@
-import { el, toast, compressImage, imageTypeLabel, setBusy } from '../utils/dom.js';
+import { el, toast, imageTypeLabel, setBusy } from '../utils/dom.js';
+import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { navigate } from '../utils/router.js';
 import {
   recognizeImage,
@@ -17,7 +18,7 @@ export async function renderIdentify(root) {
   root.append(el('div', { className: 'page identify-page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Identificar' }),
-      el('p', { className: 'page-sub', text: 'Compara una foto nueva con las de TU colección. Tú confirmas.' })
+      el('p', { className: 'page-sub', text: 'Toma la foto, recorta la figura y compara con TU colección.' })
     ]),
     el('div', { className: 'identify-actions' }, [
       el('label', { className: 'btn btn-primary btn-xl btn-block', html: '📷 Tomar foto<input type="file" accept="image/*" capture="environment" id="id-cam" hidden>' }),
@@ -56,15 +57,16 @@ export async function renderIdentify(root) {
   const onFile = async (file) => {
     if (!file) return;
     const workspace = root.querySelector('#id-workspace');
-    workspace.innerHTML = '';
     let compressed;
     try {
-      compressed = await compressImage(file);
+      compressed = await prepareImageForAnalysis(file, { cropTitle: 'Recortar figura a identificar' });
+      if (!compressed) return; // canceló el recorte
     } catch (err) {
       toast(err.message, 'error');
       return;
     }
 
+    workspace.innerHTML = '';
     const previewUrl = URL.createObjectURL(compressed);
     workspace.append(
       el('section', { className: 'section' }, [
@@ -101,8 +103,16 @@ export async function renderIdentify(root) {
     }
   };
 
-  root.querySelector('#id-cam').addEventListener('change', (e) => onFile(e.target.files?.[0]));
-  root.querySelector('#id-gal').addEventListener('change', (e) => onFile(e.target.files?.[0]));
+  root.querySelector('#id-cam').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    onFile(f);
+  });
+  root.querySelector('#id-gal').addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    onFile(f);
+  });
 }
 
 function renderResults(workspace, result, previewUrl) {

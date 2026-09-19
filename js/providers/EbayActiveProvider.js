@@ -2,9 +2,8 @@ import { MarketPriceProvider } from './MarketPriceProvider.js';
 import { ebayMarketUrls } from './EbayLinkProvider.js';
 
 /**
- * Intenta leer precios de anuncios activos en eBay US (Buy It Now).
- * No usa vendidos: desde 2026 eBay pide login para LH_Sold.
- * Pasa por proxies CORS públicos; si fallan, la UI sigue con enlaces.
+ * Lee precios de anuncios activos en eBay US (Buy It Now).
+ * Usa varios proxies; si fallan, la UI puede caer a Gemini / enlaces.
  */
 export class EbayActiveProvider extends MarketPriceProvider {
   get id() {
@@ -41,8 +40,8 @@ export class EbayActiveProvider extends MarketPriceProvider {
       searchUrl,
       soldUrl: urls.sold,
       note: stats.count
-        ? `Mediana de ${stats.count} anuncios Buy It Now en eBay US (precio pedido, no ventas cerradas). Para vendidos abre el enlace de eBay.`
-        : 'No se pudieron leer precios desde eBay automáticamente. Usa los enlaces de vendidos / en venta.'
+        ? `Mediana de ${stats.count} anuncios Buy It Now en eBay US.`
+        : 'No se pudieron leer precios desde eBay automáticamente.'
     };
   }
 }
@@ -71,32 +70,50 @@ function summarize(prices) {
 }
 
 async function fetchHtmlViaProxy(targetUrl) {
+  const bare = String(targetUrl).replace(/^https?:\/\//, '');
   const proxies = [
+    (u) => `https://r.jina.ai/http://${String(u).replace(/^https?:\/\//, '')}`,
+    (u) => `https://r.jina.ai/https://${String(u).replace(/^https?:\/\//, '')}`,
     (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`
+    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
   ];
   let lastErr = null;
   for (const build of proxies) {
     try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 12000);
       const res = await fetch(build(targetUrl), {
-        headers: { Accept: 'text/html,application/xhtml+xml' }
+        signal: ctrl.signal,
+        headers: {
+          Accept: 'text/html,application/xhtml+xml,text/plain,*/*',
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+        }
       });
+      clearTimeout(t);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      if (!text || text.length < 400) throw new Error('Respuesta vacía');
-      if (/signin\.ebay\.com|splashui\/challenge/i.test(text) && !/s-item__price/i.test(text)) {
+      if (!text || text.length < 200) throw new Error('Respuesta vacía');
+      if (/signin\.ebay\.com|splashui\/challenge|captcha/i.test(text) && !/\$\s?\d/.test(text)) {
         throw new Error('eBay bloqueó la consulta automática');
       }
-      return text;
+      // jina a veces devuelve markdown con precios
+      if (extractEbayPrices(text).length || extractEbayListings(text, 3).length || /\$\d+/.test(text)) {
+        return text;
+      }
+      // aceptar HTML largo aunque el parser sea débil
+      if (text.length > 5000) return text;
+      throw new Error('Sin precios en la respuesta');
     } catch (err) {
       lastErr = err;
     }
   }
+  void bare;
   throw lastErr || new Error('No se pudo consultar eBay');
 }
 
 /**
- * Extrae montos en USD del HTML de resultados eBay.
+ * Extrae montos en USD del HTML/markdown de resultados eBay.
  * @param {string} html
  * @returns {number[]}
  */
@@ -134,6 +151,18 @@ export function extractEbayListings(html, limit = 8) {
     const price = parseMoney(m[2]);
     if (price == null) continue;
     out.push({ title, price, currency: 'USD', url: '', condition: undefined });
+  }
+
+  // Fallback markdown/jina: Title .... $12.99
+  if (out.length < 2) {
+    const mdRe = /(?:^|\n)\s*(?:#{1,3}\s*)?([A-Za-z0-9][^$\n]{10,120}?)\s+\$([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/g;
+    while ((m = mdRe.exec(html)) !== null && out.length < limit) {
+      const title = m[1].replace(/\s+/g, ' ').trim();
+      if (/ebay|results|filter|shipping/i.test(title) && title.length < 20) continue;
+      const price = parseMoney(m[2]);
+      if (price == null || price < 5) continue;
+      out.push({ title: title.slice(0, 160), price, currency: 'USD', url: '' });
+    }
   }
   return out;
 }
