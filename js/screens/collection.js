@@ -7,7 +7,6 @@ import {
 import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from '../services/imageService.js';
 import {
-  buildMarketQuery,
   buildInstantMarket,
   saveManualMarketPrice
 } from '../services/marketPriceService.js';

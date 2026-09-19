@@ -4,7 +4,6 @@ import { buildMarketLinks, ebayMarketUrls } from '../providers/EbayLinkProvider.
 const cfg = () => window.APP_CONFIG || {};
 
 /**
- * Consulta de mercado a partir de los campos de la pieza.
  * @param {object} item
  * @returns {string}
  */
@@ -89,8 +88,8 @@ export function classifyDeal(purchasePrice, marketMedian) {
   if (!Number.isFinite(med) || med <= 0) {
     return {
       code: 'unknown_market',
-      label: 'Sin referencia',
-      detail: 'Aún no hay mediana de mercado. Consulta eBay o guarda un estimado.',
+      label: 'Revisa vendidos',
+      detail: 'Abre eBay vendidos, mira 3–5 precios y guárdalos aquí.',
       ratio: null
     };
   }
@@ -136,70 +135,6 @@ export function classifyDeal(purchasePrice, marketMedian) {
   };
 }
 
-/**
- * @param {object} item
- * @param {{ query?: string, limit?: number, persist?: boolean }} [options]
- */
-export async function lookupMarketPrice(item, options = {}) {
-  const query = (options.query || buildMarketQuery(item)).trim();
-  if (!query) throw new Error('No hay nombre suficiente para buscar precio');
-
-  const links = filterLinks(buildMarketLinks(query));
-  const ebay = ebayMarketUrls(query);
-
-  /** @type {Awaited<ReturnType<EbayActiveProvider['lookup']>> | null} */
-  let live = null;
-  let liveError = null;
-  try {
-    live = await new EbayActiveProvider().lookup({ query, limit: options.limit || 12 });
-  } catch (err) {
-    liveError = err?.message || String(err);
-  }
-
-  const result = {
-    query,
-    source: live?.source || 'market-links',
-    label: live?.label || 'Mercados US / JP',
-    currency: live?.currency || 'USD',
-    sampleSize: live?.sampleSize || 0,
-    low: live?.low ?? null,
-    median: live?.median ?? null,
-    high: live?.high ?? null,
-    listings: live?.listings || [],
-    searchUrl: live?.searchUrl || ebay.active,
-    soldUrl: live?.soldUrl || ebay.sold,
-    links,
-    ebay,
-    note: live?.note
-      || (liveError
-        ? `Consulta automática de eBay no disponible (${liveError}). Usa los enlaces US/JP; lo más fiable son los vendidos de eBay.`
-        : 'Abre eBay vendidos (US) o Yahoo/Mercari/Mandarake (JP) para comparar.'),
-    deal: classifyDeal(item?.purchase_price, live?.median),
-    checkedAt: new Date().toISOString(),
-    liveError
-  };
-
-  if (options.persist && item?.id && result.median != null) {
-    try {
-      const { updateItem } = await import('./collectionService.js');
-      await updateItem(item.id, {
-        market_price_low: result.low,
-        market_price_median: result.median,
-        market_price_high: result.high,
-        market_sample_size: result.sampleSize,
-        market_currency: result.currency,
-        market_source: result.source,
-        market_query: query,
-        market_checked_at: result.checkedAt
-      });
-    } catch {
-      // Columnas de mercado pueden faltar hasta que corras el SQL.
-    }
-  }
-
-  return result;
-}
-
 function filterLinks(links) {
   const mode = (cfg().MARKET_REGIONS || 'US,JP').toUpperCase();
   const wantUs = mode.includes('US');
@@ -209,8 +144,139 @@ function filterLinks(links) {
 
 /**
  * @param {object} item
+ */
+export function cachedMarketFromItem(item) {
+  if (!item || item.market_price_median == null) return null;
+  const query = item.market_query || buildMarketQuery(item);
+  return {
+    source: item.market_source || 'cache',
+    label: item.market_source === 'manual' ? 'Estimado manual' : 'Última consulta',
+    currency: item.market_currency || item.currency || 'USD',
+    sampleSize: item.market_sample_size || 0,
+    low: item.market_price_low != null ? Number(item.market_price_low) : null,
+    median: Number(item.market_price_median),
+    high: item.market_price_high != null ? Number(item.market_price_high) : null,
+    listings: [],
+    links: filterLinks(buildMarketLinks(query)),
+    ebay: ebayMarketUrls(query),
+    searchUrl: ebayMarketUrls(query).active,
+    soldUrl: ebayMarketUrls(query).sold,
+    query,
+    deal: classifyDeal(item.purchase_price, item.market_price_median),
+    checkedAt: item.market_checked_at || null,
+    fromCache: true,
+    note: 'Precio guardado en tu colección.'
+  };
+}
+
+/**
+ * Snapshot instantáneo: caché + enlaces (sin scrape lento).
+ * @param {object} item
+ */
+export function buildInstantMarket(item) {
+  const query = buildMarketQuery(item);
+  const ebay = ebayMarketUrls(query);
+  const links = filterLinks(buildMarketLinks(query));
+  const cached = cachedMarketFromItem(item);
+
+  if (cached) {
+    return {
+      ...cached,
+      links,
+      ebay,
+      searchUrl: ebay.active,
+      soldUrl: ebay.sold,
+      query: cached.query || query,
+      instant: true
+    };
+  }
+
+  return {
+    query,
+    source: 'market-links',
+    label: 'Mercados US / JP',
+    currency: item?.currency || 'USD',
+    sampleSize: 0,
+    low: null,
+    median: null,
+    high: null,
+    listings: [],
+    searchUrl: ebay.active,
+    soldUrl: ebay.sold,
+    links,
+    ebay,
+    note: 'Toca eBay vendidos, mira precios reales y guarda la mediana abajo.',
+    deal: classifyDeal(item?.purchase_price, null),
+    checkedAt: new Date().toISOString(),
+    instant: true
+  };
+}
+
+/**
+ * Instantáneo por defecto. Scrape solo con options.scrape (timeout 2.5s).
+ * @param {object} item
+ * @param {{ query?: string, persist?: boolean, scrape?: boolean }} [options]
+ */
+export async function lookupMarketPrice(item, options = {}) {
+  const baseItem = options.query
+    ? { ...item, name: options.query, market_query: options.query }
+    : item;
+  const result = buildInstantMarket(baseItem);
+
+  if (options.scrape) {
+    try {
+      const query = result.query || buildMarketQuery(item);
+      const live = await Promise.race([
+        new EbayActiveProvider().lookup({ query, limit: 8 }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))
+      ]);
+      if (live?.median != null) {
+        result.source = live.source;
+        result.label = live.label;
+        result.currency = live.currency;
+        result.sampleSize = live.sampleSize;
+        result.low = live.low;
+        result.median = live.median;
+        result.high = live.high;
+        result.listings = live.listings || [];
+        result.note = live.note;
+        result.deal = classifyDeal(item?.purchase_price, live.median);
+        result.checkedAt = new Date().toISOString();
+        result.instant = false;
+        if (options.persist && item?.id) {
+          await persistMarket(item.id, result, query);
+        }
+      }
+    } catch {
+      // Mantener instantáneo
+    }
+  }
+
+  return result;
+}
+
+async function persistMarket(itemId, result, query) {
+  try {
+    const { updateItem } = await import('./collectionService.js');
+    await updateItem(itemId, {
+      market_price_low: result.low,
+      market_price_median: result.median,
+      market_price_high: result.high,
+      market_sample_size: result.sampleSize,
+      market_currency: result.currency,
+      market_source: result.source,
+      market_query: query,
+      market_checked_at: result.checkedAt
+    });
+  } catch {
+    // noop
+  }
+}
+
+/**
+ * @param {object} item
  * @param {number} median
- * @param {{ low?: number, high?: number, currency?: string, query?: string }} [extra]
+ * @param {{ low?: number, high?: number, currency?: string, query?: string, sampleSize?: number }} [extra]
  */
 export async function saveManualMarketPrice(item, median, extra = {}) {
   if (!item?.id) throw new Error('Pieza inválida');
@@ -246,38 +312,12 @@ export async function saveManualMarketPrice(item, median, extra = {}) {
     deal: classifyDeal(item.purchase_price, med),
     checkedAt: payload.market_checked_at,
     note: 'Precio que guardaste tras revisar eBay / Japón.',
-    fromCache: true
-  };
-}
-
-/**
- * @param {object} item
- */
-export function cachedMarketFromItem(item) {
-  if (!item || item.market_price_median == null) return null;
-  const query = item.market_query || buildMarketQuery(item);
-  return {
-    source: item.market_source || 'cache',
-    label: item.market_source === 'manual' ? 'Estimado manual' : 'Última consulta',
-    currency: item.market_currency || item.currency || 'USD',
-    sampleSize: item.market_sample_size || 0,
-    low: item.market_price_low != null ? Number(item.market_price_low) : null,
-    median: Number(item.market_price_median),
-    high: item.market_price_high != null ? Number(item.market_price_high) : null,
-    listings: [],
-    links: filterLinks(buildMarketLinks(query)),
-    ebay: ebayMarketUrls(query),
-    searchUrl: ebayMarketUrls(query).active,
-    soldUrl: ebayMarketUrls(query).sold,
-    query,
-    deal: classifyDeal(item.purchase_price, item.market_price_median),
-    checkedAt: item.market_checked_at || null,
     fromCache: true,
-    note: 'Datos guardados. Se refrescan solos al abrir o buscar la pieza.'
+    instant: true
   };
 }
 
-const MARKET_FRESH_MS = 12 * 60 * 60 * 1000;
+const MARKET_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function isMarketFresh(item) {
   if (!item?.market_checked_at || item.market_price_median == null) return false;
@@ -286,17 +326,10 @@ export function isMarketFresh(item) {
   return Date.now() - t < MARKET_FRESH_MS;
 }
 
-/**
- * Usa caché fresco o consulta mercado y persiste.
- * @param {object} item
- * @param {{ force?: boolean }} [options]
- */
-export async function ensureMarketPrice(item, options = {}) {
-  if (!buildMarketQuery(item)) {
+/** Instantáneo: sin red. */
+export async function ensureMarketPrice(item) {
+  if (!buildMarketQuery(item) && item?.market_price_median == null) {
     throw new Error('No hay nombre suficiente para buscar precio');
   }
-  if (!options.force && isMarketFresh(item)) {
-    return cachedMarketFromItem(item);
-  }
-  return lookupMarketPrice(item, { persist: true });
+  return buildInstantMarket(item);
 }

@@ -16,7 +16,7 @@ window.APP_CONFIG = {
   STORAGE_BUCKET: 'item-photos',
 
   APP_NAME: 'Mi Colección',
-  APP_VERSION: '1.1.1',
+  APP_VERSION: '1.1.2',
 
   // Mercados: US (eBay, Mercari US) y/o JP (Yahoo Auctions, Mercari JP, AmiAmi, Mandarake, HLJ)
   MARKET_REGIONS: 'US,JP'
