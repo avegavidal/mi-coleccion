@@ -1,0 +1,9 @@
+# Local config may contain your project URL/anon key (public, but keep your own)
+# Prefer copying from config.example.js — anon key is safe to expose with RLS.
+
+.DS_Store
+Thumbs.db
+*.log
+node_modules/
+.vscode/
+.idea/

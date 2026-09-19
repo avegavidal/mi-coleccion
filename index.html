@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#12100e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Mi Colección" />
+  <meta name="description" content="Administra tu colección de figuras e identifica piezas por similitud visual." />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./assets/icons/icon-180.png" />
+  <link rel="icon" type="image/png" href="./assets/icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/styles.css" />
+  <title>Mi Colección</title>
+</head>
+<body>
+  <div id="offline-banner" class="offline-banner hidden">Sin conexión. Puedes ver la interfaz; identificación y subidas requieren Internet.</div>
+  <div id="config-warning" class="config-warning hidden">
+    Configura <code>js/config.js</code> con tu URL y anon key de Supabase. Ver README.
+  </div>
+
+  <div id="app">
+    <header id="top-bar" class="top-bar hidden">
+      <a href="#/dashboard" class="brand">Mi Colección</a>
+      <div class="top-actions">
+        <a href="#/settings" class="icon-btn" aria-label="Configuración">⚙</a>
+        <a href="#/account" class="icon-btn" aria-label="Cuenta">👤</a>
+        <button type="button" id="btn-logout-top" class="icon-btn" aria-label="Cerrar sesión">⎋</button>
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <nav id="bottom-nav" class="bottom-nav hidden" aria-label="Principal">
+      <a href="#/dashboard" data-route="dashboard" aria-label="Inicio"><span aria-hidden="true">⌂</span><small>Inicio</small></a>
+      <a href="#/collection" data-route="collection" aria-label="Colección"><span aria-hidden="true">◈</span><small>Colección</small></a>
+      <a href="#/identify" data-route="identify" class="nav-identify" aria-label="Identificar figura"><span aria-hidden="true">📷</span><small>Identificar</small></a>
+      <a href="#/wishlist" data-route="wishlist" aria-label="Wishlist"><span aria-hidden="true">☆</span><small>Wishlist</small></a>
+      <a href="#/stats" data-route="stats" aria-label="Estadísticas"><span aria-hidden="true">▦</span><small>Stats</small></a>
+    </nav>
+  </div>
+
+  <div id="toast-host" class="toast-host"></div>
+
+  <script src="./js/config.js"></script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
