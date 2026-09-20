@@ -39,101 +39,164 @@ function readGeminiApiKey() {
  */
 
 /**
+ * @param {MarketMatch[]} matches
+ */
+export function hasUsefulMarketMatches(matches) {
+  return (matches || []).some((m) => Number.isFinite(Number(m?.price)) && Number(m.price) > 0);
+}
+
+/**
  * @param {object} item
- * @param {{ imageUrl?: string|null, onProgress?: (p:{stage:string,message:string})=>void, limit?: number }} [opts]
+ * @param {{ imageUrl?: string|null, onProgress?: (p:{stage:string,message:string,attempt?:number})=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
  */
 export async function autoSearchMarketMatches(item, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
   const limit = opts.limit || 12;
+  const signal = opts.signal;
   const queries = buildSearchQueries(item);
   const imageUrl = opts.imageUrl || null;
   /** @type {MarketMatch[]} */
   let matches = [];
   const errors = [];
-
-  // 1) Gemini + Google Search (live web) — principal
   const apiKey = readGeminiApiKey();
-  if (apiKey) {
-    onProgress({ stage: 'gemini', message: 'Buscando precio en la web con IA…' });
-    try {
-      const geminiMatches = await searchMarketWithGemini(item, {
-        apiKey,
-        imageUrl,
-        queries,
-        limit
-      });
-      matches = mergeMatches(matches, geminiMatches);
-    } catch (err) {
-      errors.push(`Gemini: ${err.message}`);
-      onProgress({ stage: 'gemini', message: `IA no pudo buscar (${err.message}). Probando otras fuentes…` });
-    }
-  } else {
-    errors.push('Sin Gemini API key: ve a Configuración y guárdala para precios automáticos.');
-    onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
-  }
+  const maxAttempts = opts.maxAttempts ?? (apiKey ? 40 : 2);
 
-  // 2) eBay scrape por cada query amplia
-  if (matches.length < 3 && queries.length) {
-    onProgress({ stage: 'ebay', message: 'Consultando eBay automáticamente…' });
-    const provider = new EbayActiveProvider();
-    for (const q of queries.slice(0, 3)) {
-      if (matches.length >= limit) break;
+  const { sleep, resolveGeminiModels } = await import('../services/geminiClient.js');
+  let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: true }) : [];
+  let modelCursor = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('Búsqueda cancelada'), { name: 'AbortError' });
+    }
+
+    onProgress({
+      stage: 'attempt',
+      attempt,
+      message: `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
+    });
+
+    // 1) Gemini (rotar modelo cada intento)
+    if (apiKey) {
+      const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.0-flash';
+      modelCursor += 1;
+      onProgress({
+        stage: 'gemini',
+        attempt,
+        message: `IA (${preferModel}) + foto/datos — intento ${attempt}…`
+      });
       try {
-        const live = await Promise.race([
-          provider.lookup({ query: q, limit: 8 }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
-        ]);
-        const fromListings = (live.listings || []).map((l, i) => ({
-          id: `ebay-${q}-${i}-${l.price}`,
-          title: l.title || q,
-          price: Number(l.price),
-          currency: live.currency || 'USD',
-          source: 'ebay',
-          url: l.url || live.searchUrl || ebayMarketUrls(q).active,
-          query: q,
-          note: 'Anuncio eBay (en venta)'
-        }));
-        if (fromListings.length) {
-          matches = mergeMatches(matches, fromListings);
-        } else if (live.median != null) {
-          const synth = [];
-          for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
-            if (price == null) continue;
-            synth.push({
-              id: `ebay-stat-${q}-${label}-${price}`,
-              title: `${label}: ${q}`,
-              price: Number(price),
-              currency: 'USD',
-              source: 'ebay',
-              url: live.searchUrl,
-              query: q,
-              note: live.note || 'Resumen de precios eBay'
-            });
-          }
-          matches = mergeMatches(matches, synth);
-        }
+        const geminiMatches = await searchMarketWithGemini(item, {
+          apiKey,
+          imageUrl,
+          queries,
+          limit,
+          preferModel,
+          models: modelList,
+          signal
+        });
+        matches = mergeMatches(matches, geminiMatches);
       } catch (err) {
-        errors.push(`eBay “${q}”: ${err.message}`);
+        if (err.name === 'AbortError') throw err;
+        errors.push(`Gemini #${attempt}: ${err.message}`);
+        onProgress({
+          stage: 'gemini',
+          attempt,
+          message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con otras fuentes…`
+        });
+        // Refrescar modelos si hubo cuota
+        if (/429|cuota|free:|quota/i.test(err.message)) {
+          try {
+            modelList = await resolveGeminiModels(apiKey, { forceRefresh: true });
+          } catch {
+            // keep
+          }
+        }
+      }
+    } else if (attempt === 1) {
+      errors.push('Sin Gemini API key: ve a Configuración y guárdala para precios automáticos.');
+      onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
+    }
+
+    if (hasUsefulMarketMatches(matches)) break;
+
+    // 2) eBay
+    if (queries.length) {
+      onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
+      const provider = new EbayActiveProvider();
+      for (const q of queries.slice(0, 3)) {
+        if (hasUsefulMarketMatches(matches) && matches.length >= 3) break;
+        if (signal?.aborted) break;
+        try {
+          const live = await Promise.race([
+            provider.lookup({ query: q, limit: 8 }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
+          ]);
+          const fromListings = (live.listings || []).map((l, i) => ({
+            id: `ebay-${attempt}-${q}-${i}-${l.price}`,
+            title: l.title || q,
+            price: Number(l.price),
+            currency: live.currency || 'USD',
+            source: 'ebay',
+            url: l.url || live.searchUrl || ebayMarketUrls(q).active,
+            query: q,
+            note: 'Anuncio eBay (en venta)'
+          }));
+          if (fromListings.length) {
+            matches = mergeMatches(matches, fromListings);
+          } else if (live.median != null) {
+            const synth = [];
+            for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
+              if (price == null) continue;
+              synth.push({
+                id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
+                title: `${label}: ${q}`,
+                price: Number(price),
+                currency: 'USD',
+                source: 'ebay',
+                url: live.searchUrl,
+                query: q,
+                note: live.note || 'Resumen de precios eBay'
+              });
+            }
+            matches = mergeMatches(matches, synth);
+          }
+        } catch (err) {
+          errors.push(`eBay “${q}”: ${err.message}`);
+        }
       }
     }
-  }
 
-  // 3) Bing/DDG vía Jina si aún no hay matches
-  if (matches.length < 2 && queries[0]) {
-    onProgress({ stage: 'web', message: 'Buscando precios en la web…' });
-    try {
-      const webMatches = await searchPricesViaWebIndex(queries[0], limit);
-      matches = mergeMatches(matches, webMatches);
-    } catch (err) {
-      errors.push(`Web: ${err.message}`);
+    if (hasUsefulMarketMatches(matches)) break;
+
+    // 3) Web index
+    if (queries[0]) {
+      onProgress({ stage: 'web', attempt, message: `Índice web (intento ${attempt})…` });
+      try {
+        const webMatches = await searchPricesViaWebIndex(queries[0], limit);
+        matches = mergeMatches(matches, webMatches);
+      } catch (err) {
+        errors.push(`Web: ${err.message}`);
+      }
     }
+
+    if (hasUsefulMarketMatches(matches)) break;
+
+    if (attempt >= maxAttempts) break;
+
+    const waitMs = Math.min(45000, Math.round(2500 * (1.45 ** Math.min(attempt - 1, 7))));
+    onProgress({
+      stage: 'wait',
+      attempt,
+      message: `Aún sin precio útil. Reintento ${attempt + 1} en ${Math.round(waitMs / 1000)}s…`
+    });
+    await sleep(waitMs, signal);
   }
 
   matches = scoreAndSortMatches(matches, item).slice(0, limit);
 
   const tcg = isTcgCardItem(item);
   if (tcg) {
-    // Market Price primero en la lista
     matches = [...matches].sort((a, b) => {
       const aM = isTcgMarketPriceMatch(a) ? 1 : 0;
       const bM = isTcgMarketPriceMatch(b) ? 1 : 0;
@@ -142,7 +205,8 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     });
   }
 
-  const status = matches.length
+  const useful = hasUsefulMarketMatches(matches);
+  const status = useful
     ? 'found'
     : (errors.length ? 'error' : 'empty');
 
@@ -159,18 +223,18 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
   return {
     status,
-    matches,
+    matches: useful ? matches : [],
     queries,
     query: primaryQuery,
     imageUrl,
-    errors,
+    errors: errors.slice(-12),
     tcg,
     reference: tcg ? 'tcgplayer-market' : 'median',
     referenceMatchId: ref?.id || null,
-    sampleSize: matches.length,
-    low: matches.length ? Math.min(...matches.map((m) => m.price)) : null,
-    median,
-    high: matches.length ? Math.max(...matches.map((m) => m.price)) : null,
+    sampleSize: useful ? matches.length : 0,
+    low: useful ? Math.min(...matches.map((m) => m.price)) : null,
+    median: useful ? median : null,
+    high: useful ? Math.max(...matches.map((m) => m.price)) : null,
     currency: 'USD',
     links: [
       ...buildVisualMarketLinks(imageUrl),
@@ -184,11 +248,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
           ? `Referencia: TCGPlayer Market Price $${Number(ref.price).toFixed(2)}. Elige la ideal si hay varias.`
           : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Prefiere la de Market Price.`)
         : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`)
-      : !readGeminiApiKey()
+      : !apiKey
         ? 'Para precios automáticos: Configuración → pega tu Gemini API key. Sin ella los marketplaces bloquean la lectura automática.'
       : status === 'empty'
-        ? 'No encontré precios automáticos para esta pieza. Revisa los datos o abre un buscador manual.'
-        : `No pude leer el mercado automáticamente (${errors[0] || 'error'}). Puedes reintentar o abrir un buscador.`
+        ? 'Tras varios intentos no encontré precios útiles. Revisa los datos o abre un buscador manual.'
+        : `Tras reintentos no pude leer el mercado (${errors[errors.length - 1] || 'error'}). Puedes pulsar “Buscar de nuevo”.`
   };
 }
 
@@ -248,7 +312,7 @@ function soften(name) {
 
 /**
  * @param {object} item
- * @param {{ apiKey: string, imageUrl?: string|null, queries: string[], limit?: number }} opts
+ * @param {{ apiKey: string, imageUrl?: string|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal }} opts
  * @returns {Promise<MarketMatch[]>}
  */
 export async function searchMarketWithGemini(item, opts) {
@@ -317,65 +381,47 @@ ${tcg
   const {
     geminiGenerateContent,
     geminiTextFromResponse,
-    resolveGeminiModels,
     formatGeminiHttpError
   } = await import('../services/geminiClient.js');
-  const models = await resolveGeminiModels(apiKey);
-  let lastErr = '';
-  let data = null;
 
-  // Una sola petición con grounding; si falla por tools → plain. No cascada de modelos.
-  const model = models[0] || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const bodyPlain = {
+    contents: [{ parts }],
+    generationConfig: { temperature: 0.2 }
+  };
   const bodyWithTools = {
     contents: [{ parts }],
     tools: [{ google_search: {} }],
     generationConfig: { temperature: 0.2 }
   };
-  const bodyPlain = {
-    contents: [{ parts }],
-    generationConfig: { temperature: 0.2 }
-  };
 
-  let res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyWithTools)
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    lastErr = errText;
-    if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(errText)) {
-      throw new Error(formatGeminiHttpError(429, errText));
-    }
-    if (res.status === 400 || res.status === 404 || /google_search|tool|Unknown name/i.test(errText)) {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPlain)
-      });
-    }
+  // Free tier: grounding a menudo falla con 429; probar plain primero, luego tools.
+  let lastErr = '';
+  try {
+    const out = await geminiGenerateContent(apiKey, bodyPlain, {
+      signal: opts.signal,
+      models: opts.models,
+      preferModel: opts.preferModel
+    });
+    const text = geminiTextFromResponse(out.data);
+    const parsed = parseGeminiMarketMatches(text, searchHint);
+    if (hasUsefulMarketMatches(parsed)) return parsed;
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    lastErr = err.message;
   }
 
-  if (!res.ok) {
-    lastErr = await res.text();
-    if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(lastErr)) {
-      throw new Error(formatGeminiHttpError(429, lastErr));
-    }
-    // Último recurso: helper (otro modelo a lo sumo)
-    try {
-      const out = await geminiGenerateContent(apiKey, bodyPlain);
-      data = out.data;
-    } catch (err) {
-      throw new Error(String(err.message || lastErr).slice(0, 280));
-    }
-  } else {
-    data = await res.json();
+  try {
+    const out = await geminiGenerateContent(apiKey, bodyWithTools, {
+      signal: opts.signal,
+      models: opts.models,
+      preferModel: opts.preferModel
+    });
+    const text = geminiTextFromResponse(out.data);
+    return parseGeminiMarketMatches(text, searchHint);
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    throw new Error(String(err.message || lastErr || formatGeminiHttpError(0, '')).slice(0, 280));
   }
-
-  const text = geminiTextFromResponse(data);
-  return parseGeminiMarketMatches(text, searchHint);
 }
 
 /**

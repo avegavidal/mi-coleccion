@@ -458,7 +458,14 @@ test('geminiClient no usa modelos 1.5 retireados', async () => {
   const models = await gc.resolveGeminiModels('');
   assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
   assert(models.includes('gemini-2.0-flash'));
-  assert(/Cuota Gemini|429/.test(gc.formatGeminiHttpError(429, 'RESOURCE_EXHAUSTED')));
+  assert(/429|Cuota|free/i.test(gc.formatGeminiHttpError(429, 'RESOURCE_EXHAUSTED')));
+  assert(/free|0/i.test(gc.formatGeminiHttpError(429, 'generate_content_free_tier_requests limit: 0')));
+});
+
+test('hasUsefulMarketMatches exige precio > 0', () => {
+  assert(!autoM.hasUsefulMarketMatches([]));
+  assert(!autoM.hasUsefulMarketMatches([{ price: 0 }]));
+  assert(autoM.hasUsefulMarketMatches([{ price: 12.5, title: 'x' }]));
 });
 
 test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {
@@ -556,7 +563,7 @@ await testAsync('autoSearch sin key responde empty/error estructurado', async ()
     series: 'Nendoroid',
     character_name: 'Link',
     item_number: '563'
-  }, { limit: 6 });
+  }, { limit: 6, maxAttempts: 1 });
   assert(['found', 'empty', 'error'].includes(result.status), result.status);
   assert(Array.isArray(result.matches));
   assert(Array.isArray(result.queries) && result.queries.length >= 1);

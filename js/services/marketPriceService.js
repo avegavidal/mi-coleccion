@@ -424,6 +424,8 @@ export async function lookupMarketPrice(item, options = {}) {
   const auto = await autoSearchMarketMatches(baseItem, {
     imageUrl,
     onProgress: options.onProgress,
+    signal: options.signal,
+    maxAttempts: options.maxAttempts,
     limit: 12
   });
 

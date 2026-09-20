@@ -333,6 +333,12 @@ export async function renderItemDetail(root, params) {
         el('div', { id: 'market-status', className: 'status-line muted', text: '…' }),
         el('button', {
           type: 'button',
+          className: 'btn btn-ghost hidden',
+          id: 'market-cancel',
+          text: 'Detener'
+        }),
+        el('button', {
+          type: 'button',
           className: 'btn btn-ghost',
           id: 'market-refresh',
           text: 'Buscar de nuevo'
@@ -354,6 +360,8 @@ export async function renderItemDetail(root, params) {
   const marketStatus = root.querySelector('#market-status');
   const marketProfit = root.querySelector('#market-profit');
   const marketRefreshBtn = root.querySelector('#market-refresh');
+  const marketCancelBtn = root.querySelector('#market-cancel');
+  let marketAbort = null;
   const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
   const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
     const ia = preferTypes.indexOf(a.image_type);
@@ -459,14 +467,22 @@ export async function renderItemDetail(root, params) {
       clearMarketCache(item.id);
     }
 
-    marketStatus.textContent = 'Buscando precios automáticamente…';
+    if (marketAbort) {
+      try { marketAbort.abort(); } catch { /* ignore */ }
+    }
+    marketAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (marketCancelBtn) marketCancelBtn.classList.remove('hidden');
+
+    marketStatus.textContent = 'Buscando precios automáticamente (reintenta hasta obtener precio)…';
     refreshMarket(buildInstantMarket(item, { imageUrl }));
     lookupMarketPrice(item, {
       imageUrl,
+      signal: marketAbort?.signal,
       onProgress: (p) => {
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
     }).then((result) => {
+      if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
       refreshMarket(result);
       paintProfit();
       if (result.status === 'found') {
@@ -474,20 +490,30 @@ export async function renderItemDetail(root, params) {
           ? `Encontré ${result.matches.length} coincidencias — elige la ideal`
           : 'Encontré 1 coincidencia';
       } else if (result.status === 'empty') {
-        marketStatus.textContent = 'Sin coincidencias automáticas';
+        marketStatus.textContent = 'Sin coincidencias automáticas tras reintentos';
       } else {
         marketStatus.textContent = result.note || 'No se pudo completar la búsqueda automática';
       }
     }).catch((err) => {
+      if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
+      if (err?.name === 'AbortError') {
+        marketStatus.textContent = 'Búsqueda detenida';
+        return;
+      }
       marketStatus.textContent = err.message || 'Error al buscar precio';
     });
   };
+
+  marketCancelBtn?.addEventListener('click', () => {
+    try { marketAbort?.abort(); } catch { /* ignore */ }
+    if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
+    if (marketStatus) marketStatus.textContent = 'Deteniendo…';
+  });
 
   marketRefreshBtn?.addEventListener('click', (e) => {
     const btn = e.currentTarget;
     setBusy(btn, true, 'Buscando…');
     runMarketSearch(true);
-    // setBusy ends when search paints; unlock after short delay if still busy
     setTimeout(() => setBusy(btn, false), 800);
   });
 
