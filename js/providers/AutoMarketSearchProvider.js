@@ -38,6 +38,21 @@ function readGeminiApiKey() {
  * }} MarketMatch
  */
 
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error('Búsqueda cancelada'), { name: 'AbortError' }));
+      return;
+    }
+    const t = setTimeout(resolve, Math.max(0, Number(ms) || 0));
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(Object.assign(new Error('Búsqueda cancelada'), { name: 'AbortError' }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /**
  * @param {MarketMatch[]} matches
  */
@@ -61,7 +76,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   const apiKey = readGeminiApiKey();
   const maxAttempts = opts.maxAttempts ?? (apiKey ? 40 : 2);
 
-  const { sleep, resolveGeminiModels } = await import('../services/geminiClient.js');
+  const { resolveGeminiModels } = await import('../services/geminiClient.js');
   let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: true }) : [];
   let modelCursor = 0;
 
@@ -190,7 +205,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       attempt,
       message: `Aún sin precio útil. Reintento ${attempt + 1} en ${Math.round(waitMs / 1000)}s…`
     });
-    await sleep(waitMs, signal);
+    await delay(waitMs, signal);
   }
 
   matches = scoreAndSortMatches(matches, item).slice(0, limit);

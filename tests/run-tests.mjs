@@ -453,19 +453,31 @@ test('CSS cropper overlay existe', () => {
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
 
-test('geminiClient no usa modelos 1.5 retireados', async () => {
+await testAsync('geminiClient no usa modelos 1.5 retireados', async () => {
   const gc = await import(pathToFileURL(join(root, 'js/services/geminiClient.js')).href);
   const models = await gc.resolveGeminiModels('');
   assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
   assert(models.includes('gemini-2.0-flash'));
   assert(/429|Cuota|free/i.test(gc.formatGeminiHttpError(429, 'RESOURCE_EXHAUSTED')));
   assert(/free|0/i.test(gc.formatGeminiHttpError(429, 'generate_content_free_tier_requests limit: 0')));
+  assert(typeof gc.sleep === 'function');
+  const t0 = Date.now();
+  await gc.sleep(20);
+  assert(Date.now() - t0 >= 15);
 });
 
 test('hasUsefulMarketMatches exige precio > 0', () => {
   assert(!autoM.hasUsefulMarketMatches([]));
   assert(!autoM.hasUsefulMarketMatches([{ price: 0 }]));
   assert(autoM.hasUsefulMarketMatches([{ price: 12.5, title: 'x' }]));
+});
+
+test('autoSearch reintento usa delay local (no sleep importado)', () => {
+  const src = readFileSync(join(root, 'js/providers/AutoMarketSearchProvider.js'), 'utf8');
+  assert(/function delay\(/.test(src), 'debe definir delay local');
+  assert(/await delay\(waitMs/.test(src), 'debe await delay(waitMs)');
+  assert(!/await sleep\(/.test(src), 'no debe llamar sleep() del import');
+  assert(!/\{ sleep[, ]/.test(src), 'no debe destructurar sleep del import');
 });
 
 test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {
