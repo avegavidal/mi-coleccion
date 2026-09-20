@@ -457,7 +457,8 @@ test('geminiClient no usa modelos 1.5 retireados', async () => {
   const gc = await import(pathToFileURL(join(root, 'js/services/geminiClient.js')).href);
   const models = await gc.resolveGeminiModels('');
   assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
-  assert(models.includes('gemini-2.5-flash'));
+  assert(models.includes('gemini-2.0-flash'));
+  assert(/Cuota Gemini|429/.test(gc.formatGeminiHttpError(429, 'RESOURCE_EXHAUSTED')));
 });
 
 test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {

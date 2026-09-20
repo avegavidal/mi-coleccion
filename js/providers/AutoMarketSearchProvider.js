@@ -314,71 +314,64 @@ ${tcg
     }
   }
 
-  const { geminiGenerateContent, geminiTextFromResponse, resolveGeminiModels } = await import('../services/geminiClient.js');
+  const {
+    geminiGenerateContent,
+    geminiTextFromResponse,
+    resolveGeminiModels,
+    formatGeminiHttpError
+  } = await import('../services/geminiClient.js');
   const models = await resolveGeminiModels(apiKey);
   let lastErr = '';
   let data = null;
 
-  for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const bodyWithTools = {
-      contents: [{ parts }],
-      tools: [{ google_search: {} }],
-      generationConfig: { temperature: 0.2 }
-    };
-    const bodyPlain = {
-      contents: [{ parts }],
-      generationConfig: { temperature: 0.2 }
-    };
+  // Una sola petición con grounding; si falla por tools → plain. No cascada de modelos.
+  const model = models[0] || 'gemini-2.0-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const bodyWithTools = {
+    contents: [{ parts }],
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature: 0.2 }
+  };
+  const bodyPlain = {
+    contents: [{ parts }],
+    generationConfig: { temperature: 0.2 }
+  };
 
-    let res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyWithTools)
-    });
+  let res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyWithTools)
+  });
 
-    if (!res.ok && (res.status === 400 || res.status === 404)) {
-      const errText = await res.text();
-      lastErr = errText;
-      if (/google_search|tool|Unknown name/i.test(errText)) {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(bodyPlain)
-        });
-      } else if (res.status === 404 || /not found|not supported/i.test(errText)) {
-        continue;
-      } else {
-        // otro 400: intentar sin tools
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(bodyPlain)
-        });
-      }
+  if (!res.ok) {
+    const errText = await res.text();
+    lastErr = errText;
+    if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(errText)) {
+      throw new Error(formatGeminiHttpError(429, errText));
     }
-
-    if (!res.ok) {
-      lastErr = await res.text();
-      if (res.status === 404 || res.status === 400) continue;
-      throw new Error(`Gemini ${res.status}: ${String(lastErr).slice(0, 160)}`);
+    if (res.status === 400 || res.status === 404 || /google_search|tool|Unknown name/i.test(errText)) {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPlain)
+      });
     }
-
-    data = await res.json();
-    break;
   }
 
-  if (!data) {
-    // Último recurso: helper centralizado sin tools
+  if (!res.ok) {
+    lastErr = await res.text();
+    if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(lastErr)) {
+      throw new Error(formatGeminiHttpError(429, lastErr));
+    }
+    // Último recurso: helper (otro modelo a lo sumo)
     try {
-      const out = await geminiGenerateContent(apiKey, {
-        contents: [{ parts }],
-        generationConfig: { temperature: 0.2 }
-      });
+      const out = await geminiGenerateContent(apiKey, bodyPlain);
       data = out.data;
     } catch (err) {
-      throw new Error(String(lastErr || err.message).slice(0, 200));
+      throw new Error(String(err.message || lastErr).slice(0, 280));
     }
+  } else {
+    data = await res.json();
   }
 
   const text = geminiTextFromResponse(data);

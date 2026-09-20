@@ -1,13 +1,19 @@
 /**
- * Cliente Gemini compartido: elige modelos actuales (sin 1.5 retireados).
+ * Cliente Gemini compartido: modelos actuales (sin 1.5) y manejo de cuota.
+ *
+ * Las keys de AI Studio usan cuota del proyecto (free o paid). Un 429 no es
+ * un bug de la app: Google rechaza la petición por límite del proyecto.
  */
 
+/** Pocos modelos, del más estable/barato al más nuevo — evita quemar cuota en reintentos. */
 const PREFERRED_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
   'gemini-flash-latest'
 ];
+
+const MAX_MODEL_TRIES = 2;
 
 /** @type {Map<string, { at: number, models: string[] }>} */
 const listCache = new Map();
@@ -18,39 +24,36 @@ const LIST_TTL_MS = 30 * 60 * 1000;
  * @returns {Promise<string[]>}
  */
 export async function resolveGeminiModels(apiKey) {
-  if (!apiKey) return [...PREFERRED_MODELS];
+  if (!apiKey) return PREFERRED_MODELS.slice(0, MAX_MODEL_TRIES);
+
   const cached = listCache.get(apiKey);
   if (cached && Date.now() - cached.at < LIST_TTL_MS && cached.models.length) {
-    return cached.models;
+    return cached.models.slice(0, MAX_MODEL_TRIES);
   }
 
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`
-    );
-    if (!res.ok) throw new Error(`list ${res.status}`);
-    const data = await res.json();
-    const available = (data.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-      .map((m) => String(m.name || '').replace(/^models\//, ''))
-      .filter(Boolean);
+  // Preferir lista estática: ListModels también cuenta contra el proyecto.
+  const staticPick = PREFERRED_MODELS.slice(0, MAX_MODEL_TRIES);
+  listCache.set(apiKey, { at: Date.now(), models: staticPick });
+  return staticPick;
+}
 
-    const preferred = PREFERRED_MODELS.filter((id) => available.includes(id));
-    const flashExtras = available.filter((id) =>
-      /flash/i.test(id)
-      && !/image|tts|audio|embed|robotics/i.test(id)
-      && !preferred.includes(id)
+/**
+ * @param {number} status
+ * @param {string} body
+ */
+export function formatGeminiHttpError(status, body) {
+  const text = String(body || '');
+  if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(text)) {
+    return (
+      'Cuota Gemini agotada (HTTP 429). La key de AI Studio usa el cupo del proyecto '
+      + '(free o paid). Revisa uso y billing en https://aistudio.google.com/ — '
+      + 'activa facturación o espera el reset diario. No es un fallo de Mi Colección.'
     );
-    const models = [...preferred, ...flashExtras].slice(0, 6);
-    if (models.length) {
-      listCache.set(apiKey, { at: Date.now(), models });
-      return models;
-    }
-  } catch {
-    // fallback estático
   }
-
-  return [...PREFERRED_MODELS];
+  if (status === 404 || /not found|not supported/i.test(text)) {
+    return `Modelo Gemini no disponible (${status}).`;
+  }
+  return `Gemini ${status}: ${text.slice(0, 160)}`;
 }
 
 /**
@@ -77,19 +80,24 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
       }
       lastStatus = res.status;
       lastErr = await res.text();
-      // 404 / modelo inválido → probar siguiente
+
+      // Cuota: no probar más modelos (cada intento gasta más).
+      if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(lastErr)) {
+        throw new Error(formatGeminiHttpError(429, lastErr));
+      }
+      // 404 / modelo inválido → siguiente
       if (res.status === 404 || res.status === 400) continue;
-      throw new Error(`Gemini ${res.status}: ${String(lastErr).slice(0, 180)}`);
+      throw new Error(formatGeminiHttpError(res.status, lastErr));
     } catch (err) {
       if (err.name === 'AbortError') throw err;
-      if (/Gemini \d/.test(err.message)) throw err;
+      if (/Cuota Gemini|Gemini \d|Modelo Gemini/i.test(err.message)) throw err;
       lastErr = err.message;
     }
   }
 
   throw new Error(
-    `Ningún modelo Gemini disponible (${lastStatus || 'error'}). `
-    + `Prueba regenerar la API key en Google AI Studio. ${String(lastErr).slice(0, 120)}`
+    formatGeminiHttpError(lastStatus || 0, lastErr)
+    || 'Ningún modelo Gemini disponible. Revisa la API key en AI Studio.'
   );
 }
 

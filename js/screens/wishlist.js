@@ -253,7 +253,8 @@ export async function renderSettings(root) {
     ]),
     el('div', { className: 'notice notice-info' }, [
       el('p', { text: `Modelo activo: ${meta.modelId}` }),
-      el('p', { text: 'CLIP corre en tu navegador. Gemini solo se usa al agregar una foto si guardaste la key.' }),
+      el('p', { text: 'CLIP corre en tu navegador. Gemini solo se usa al agregar una foto o buscar precio si guardaste la key.' }),
+      el('p', { className: 'muted small', text: 'Un error 429 es cuota de Google (AI Studio free/paid), no de la app. Revisa aistudio.google.com → Rate limits / Billing.' }),
       el('button', { type: 'button', className: 'btn btn-ghost', id: 'warmup', text: 'Precargar modelo' })
     ]),
     el('form', { id: 'thr-form', className: 'stack-form' }, [
