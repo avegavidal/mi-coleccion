@@ -101,7 +101,7 @@ async function boot() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('./service-worker.js?v=17');
+      const reg = await navigator.serviceWorker.register('./service-worker.js?v=18');
       await reg.update();
     } catch (err) {
       console.warn('SW no registrado', err);

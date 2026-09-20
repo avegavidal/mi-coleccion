@@ -102,7 +102,13 @@ export async function renderAdd(root, params = []) {
         ]),
         el('div', { className: 'btn-row' }, [
           el('label', { className: 'btn btn-primary', html: '📷 Tomar foto<input type="file" accept="image/*" capture="environment" id="cam" hidden>' }),
-          el('label', { className: 'btn btn-ghost', html: 'Galería<input type="file" accept="image/*" id="gallery" hidden>' })
+          el('label', { className: 'btn btn-ghost', html: 'Galería<input type="file" accept="image/*" id="gallery" hidden>' }),
+          el('button', {
+            type: 'button',
+            className: 'btn btn-ghost hidden',
+            id: 'clear-photo',
+            text: 'Quitar foto'
+          })
         ])
       ]),
       el('p', { className: 'status-line muted', id: 'id-status', text: 'La foto se analiza al instante (OCR de caja; IA opcional).' }),
@@ -155,10 +161,32 @@ export async function renderAdd(root, params = []) {
   ]));
 
   let photoFile = null;
+  let photoObjectUrl = null;
   let identifySeq = 0;
   const preview = root.querySelector('#preview');
   const form = root.querySelector('#add-form');
   const idStatus = root.querySelector('#id-status');
+  const clearPhotoBtn = root.querySelector('#clear-photo');
+  const camInput = root.querySelector('#cam');
+  const galleryInput = root.querySelector('#gallery');
+
+  const clearPhoto = ({ resetStatus = true } = {}) => {
+    identifySeq += 1;
+    photoFile = null;
+    if (photoObjectUrl) {
+      try { URL.revokeObjectURL(photoObjectUrl); } catch { /* ignore */ }
+      photoObjectUrl = null;
+    }
+    if (camInput) camInput.value = '';
+    if (galleryInput) galleryInput.value = '';
+    window.__pendingIdentifyFile = null;
+    preview.innerHTML = '';
+    preview.append(el('span', { className: 'muted', text: 'Sin fotografía aún' }));
+    clearPhotoBtn?.classList.add('hidden');
+    if (resetStatus && idStatus) {
+      idStatus.textContent = 'La foto se analiza al instante (OCR de caja; IA opcional).';
+    }
+  };
 
   const applySuggestion = (s) => {
     if (!s) return;
@@ -195,11 +223,19 @@ export async function renderAdd(root, params = []) {
       toast(err.message, 'error');
       return;
     }
+
+    if (photoObjectUrl) {
+      try { URL.revokeObjectURL(photoObjectUrl); } catch { /* ignore */ }
+      photoObjectUrl = null;
+    }
+
     photoFile = prepared;
+    photoObjectUrl = URL.createObjectURL(photoFile);
     preview.innerHTML = '';
     const img = el('img', { alt: 'Vista previa' });
-    img.src = URL.createObjectURL(photoFile);
+    img.src = photoObjectUrl;
     preview.append(img);
+    clearPhotoBtn?.classList.remove('hidden');
 
     const seq = ++identifySeq;
     idStatus.textContent = 'Analizando foto…';
@@ -227,15 +263,19 @@ export async function renderAdd(root, params = []) {
     }
   };
 
-  root.querySelector('#cam').addEventListener('change', (e) => {
+  camInput?.addEventListener('change', (e) => {
     const f = e.target.files?.[0];
     e.target.value = '';
-    setPhoto(f);
+    if (f) setPhoto(f);
   });
-  root.querySelector('#gallery').addEventListener('change', (e) => {
+  galleryInput?.addEventListener('change', (e) => {
     const f = e.target.files?.[0];
     e.target.value = '';
-    setPhoto(f);
+    if (f) setPhoto(f);
+  });
+  clearPhotoBtn?.addEventListener('click', () => {
+    clearPhoto();
+    toast('Foto quitada', 'ok');
   });
 
   if (prefillPhoto) {

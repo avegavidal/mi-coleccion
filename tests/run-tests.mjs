@@ -441,6 +441,8 @@ test('identify/collection usan prepareImageForAnalysis', () => {
   assert(/prepareImageForAnalysis/.test(colSrc));
   assert(/openImageCropper|prepareImageForAnalysis/.test(idSrc));
   assert(!/compressImage\(file\)/.test(idSrc), 'identify no debe comprimir sin recorte');
+  assert(/clear-photo|Quitar foto/.test(colSrc), 'add form debe poder quitar la foto');
+  assert(/URL\.revokeObjectURL/.test(colSrc));
 });
 
 test('CSS cropper overlay existe', () => {
