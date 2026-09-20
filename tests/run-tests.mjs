@@ -151,6 +151,7 @@ const required = [
   'js/services/exportService.js',
   'js/services/statsService.js',
   'js/services/marketPriceService.js',
+  'js/services/geminiClient.js',
   'js/providers/LocalEmbeddingProvider.js',
   'js/providers/RemoteEmbeddingProvider.js',
   'js/providers/EmbeddingProvider.js',
@@ -451,6 +452,13 @@ test('CSS cropper overlay existe', () => {
 
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
+
+test('geminiClient no usa modelos 1.5 retireados', async () => {
+  const gc = await import(pathToFileURL(join(root, 'js/services/geminiClient.js')).href);
+  const models = await gc.resolveGeminiModels('');
+  assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
+  assert(models.includes('gemini-2.5-flash'));
+});
 
 test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {
   const ref = autoM.pickTcgReferenceMatch([

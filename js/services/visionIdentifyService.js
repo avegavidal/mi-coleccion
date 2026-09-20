@@ -89,35 +89,18 @@ category (string or null — use "TCG" or "Carta" if it is a trading card),
 confidence ("high"|"medium"|"low").
 If unsure, still guess the best searchable product name. Prefer English or common romanization.`;
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-  let res = null;
-  let lastErr = '';
-  for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mime, data: base64 } }
-          ]
-        }],
-        generationConfig: { temperature: 0.2 }
-      })
-    });
-    if (res.ok) break;
-    lastErr = await res.text();
-    if (res.status !== 404 && res.status !== 400) break;
-  }
+  const { geminiGenerateContent, geminiTextFromResponse } = await import('./geminiClient.js');
+  const { data } = await geminiGenerateContent(apiKey, {
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: mime, data: base64 } }
+      ]
+    }],
+    generationConfig: { temperature: 0.2 }
+  });
 
-  if (!res?.ok) {
-    throw new Error(`Gemini ${res?.status}: ${String(lastErr).slice(0, 180)}`);
-  }
-
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('\n') || '';
+  const text = geminiTextFromResponse(data);
   const parsed = parseJsonObject(text);
   if (!parsed) throw new Error('Gemini no devolvió JSON usable');
   return normalizeSuggestion(parsed);

@@ -314,24 +314,29 @@ ${tcg
     }
   }
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const { geminiGenerateContent, geminiTextFromResponse, resolveGeminiModels } = await import('../services/geminiClient.js');
+  const models = await resolveGeminiModels(apiKey);
   let lastErr = '';
   let data = null;
 
   for (const model of models) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const body = {
+    const bodyWithTools = {
       contents: [{ parts }],
       tools: [{ google_search: {} }],
       generationConfig: { temperature: 0.2 }
     };
+    const bodyPlain = {
+      contents: [{ parts }],
+      generationConfig: { temperature: 0.2 }
+    };
+
     let res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(bodyWithTools)
     });
 
-    // Algunas cuentas/modelos no aceptan google_search — reintentar sin tool
     if (!res.ok && (res.status === 400 || res.status === 404)) {
       const errText = await res.text();
       lastErr = errText;
@@ -339,13 +344,17 @@ ${tcg
         res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { temperature: 0.2 }
-          })
+          body: JSON.stringify(bodyPlain)
         });
-      } else {
+      } else if (res.status === 404 || /not found|not supported/i.test(errText)) {
         continue;
+      } else {
+        // otro 400: intentar sin tools
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyPlain)
+        });
       }
     }
 
@@ -359,9 +368,20 @@ ${tcg
     break;
   }
 
-  if (!data) throw new Error(String(lastErr).slice(0, 180) || 'Gemini sin respuesta');
+  if (!data) {
+    // Último recurso: helper centralizado sin tools
+    try {
+      const out = await geminiGenerateContent(apiKey, {
+        contents: [{ parts }],
+        generationConfig: { temperature: 0.2 }
+      });
+      data = out.data;
+    } catch (err) {
+      throw new Error(String(lastErr || err.message).slice(0, 200));
+    }
+  }
 
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('\n') || '';
+  const text = geminiTextFromResponse(data);
   return parseGeminiMarketMatches(text, searchHint);
 }
 
