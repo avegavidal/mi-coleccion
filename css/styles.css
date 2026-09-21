@@ -1272,6 +1272,7 @@ a.stat-card:active {
 .market-ref-badge {
   display: inline-block;
   margin-top: 4px;
+  margin-right: 6px;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 0.7rem;
@@ -1280,6 +1281,15 @@ a.stat-card:active {
   text-transform: uppercase;
   color: var(--accent-2);
   background: var(--accent-soft);
+}
+
+.market-est-badge {
+  color: var(--muted);
+  background: var(--bg-3);
+}
+
+.market-match-card.is-search-link .market-match-open {
+  color: var(--muted);
 }
 
 .market-match-list {

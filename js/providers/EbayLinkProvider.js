@@ -255,20 +255,70 @@ export function storeLabel(source) {
 }
 
 /**
+ * ¿Es URL de un anuncio/producto concreto (no página de búsqueda)?
+ * @param {string} url
+ */
+export function isDirectListingUrl(url) {
+  const u = String(url || '');
+  if (!/^https?:\/\//i.test(u)) return false;
+  if (/\/sch\/i\.html|\/s\?k=|\/search\/|\?q=|searchString=|search-products|keyword=/i.test(u)
+    && !/\/itm\/|\/dp\/|\/item\/|\/product\//i.test(u)) {
+    return false;
+  }
+  return (
+    /ebay\.[^/]+\/itm\//i.test(u)
+    || /amazon\.[^/]+\/(dp|gp\/product)\//i.test(u)
+    || /mercari\.com\/(?:us\/)?item\//i.test(u)
+    || /jp\.mercari\.com\/item\//i.test(u)
+    || /amiami\.com\/.+\/detail\//i.test(u)
+    || /tcgplayer\.com\/product\//i.test(u)
+    || /page\.auctions\.yahoo\.co\.jp\/jp\/auction\//i.test(u)
+    || /mandarake\.co\.jp\/.+/i.test(u) && /detail|item/i.test(u)
+    || /pricecharting\.com\/game\//i.test(u)
+    || /cardmarket\.com\/.+\/Products\/.+\/.+/i.test(u)
+  );
+}
+
+/**
+ * URL + si es anuncio exacto o solo búsqueda orientativa.
+ * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number }} match
+ * @returns {{ url: string, exact: boolean, label: string }}
+ */
+export function listingLinkMeta(match) {
+  const source = storeLabel(match?.source);
+  const raw = typeof match?.url === 'string' ? match.url.trim() : '';
+  if (isDirectListingUrl(raw)) {
+    return {
+      url: raw,
+      exact: true,
+      label: `Abrir anuncio en ${source} →`
+    };
+  }
+
+  const url = storeLinkForMatch(match);
+  return {
+    url,
+    exact: false,
+    label: `Buscar ~ese precio en ${source} →`
+  };
+}
+
+/**
  * URL para abrir el producto en su tienda.
- * Si ya hay un enlace http real, se usa; si no, búsqueda de ESE título en esa tienda.
- * @param {{ source?: string, title?: string, url?: string, query?: string }} match
+ * Si hay enlace de anuncio real, se usa; si no, búsqueda del título (± rango de precio).
+ * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number }} match
  */
 export function storeLinkForMatch(match) {
   const direct = typeof match?.url === 'string' && /^https?:\/\//i.test(match.url.trim())
     ? match.url.trim()
     : '';
-  if (direct && !/example\.com|google\.com\/search\?/i.test(direct)) return direct;
+  if (isDirectListingUrl(direct)) return direct;
 
   const title = String(match?.title || match?.query || '').trim().slice(0, 140);
   if (!title) return direct;
   const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
   const tcg = /tcg|cardmarket|pricechart|pokemon|yugioh|mtg/.test(s + title);
+  const price = Number(match?.price);
   const links = buildShopLinksForQuery(title, { tcg });
   let id = STORE_LINK_IDS[s] || '';
   if (!id) {
@@ -285,5 +335,40 @@ export function storeLinkForMatch(match) {
     else if (s.includes('ebay')) id = 'ebay-active';
     else id = tcg ? 'tcgplayer' : 'ebay-active';
   }
-  return links.find((l) => l.id === id)?.url || direct || links[0]?.url || '';
+  let url = links.find((l) => l.id === id)?.url || links[0]?.url || '';
+  if (url && Number.isFinite(price) && price > 0) {
+    url = withPriceBand(url, id, price);
+  }
+  return url || direct || '';
+}
+
+/**
+ * Acota la búsqueda al rango del precio mostrado (±15%).
+ * @param {string} url
+ * @param {string} shopId
+ * @param {number} priceUsd
+ */
+export function withPriceBand(url, shopId, priceUsd) {
+  const p = Number(priceUsd);
+  if (!url || !Number.isFinite(p) || p <= 0) return url;
+  const lo = Math.max(1, Math.floor(p * 0.85));
+  const hi = Math.ceil(p * 1.15);
+  try {
+    const u = new URL(url);
+    if (shopId === 'ebay-active' || shopId === 'ebay-sold' || /ebay\.com\/sch/i.test(url)) {
+      u.searchParams.set('_udlo', String(lo));
+      u.searchParams.set('_udhi', String(hi));
+      return u.toString();
+    }
+    if (shopId === 'amazon-us' || /amazon\.com\/s\?/i.test(url)) {
+      // Amazon US: precio en centavos
+      const rh = `p_36:${lo * 100}-${hi * 100}`;
+      const prev = u.searchParams.get('rh');
+      u.searchParams.set('rh', prev ? `${prev},${rh}` : rh);
+      return u.toString();
+    }
+  } catch {
+    // keep original
+  }
+  return url;
 }

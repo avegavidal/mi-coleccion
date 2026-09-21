@@ -355,11 +355,26 @@ test('storeLinkForMatch abre la tienda del precio', () => {
     url: 'https://www.ebay.com/itm/123'
   });
   assert(direct === 'https://www.ebay.com/itm/123');
+  assert(ebayLinks.isDirectListingUrl('https://www.ebay.com/itm/123456'));
+  assert(!ebayLinks.isDirectListingUrl('https://www.ebay.com/sch/i.html?_nkw=test'));
   const tcg = ebayLinks.storeLinkForMatch({ source: 'tcgplayer', title: 'Charizard ex 223' });
   assert(/tcgplayer\.com\/search/.test(tcg), tcg);
   assert(/Charizard/.test(decodeURIComponent(tcg)));
   const amz = ebayLinks.storeLinkForMatch({ source: 'amazon', title: 'Gxmateria Vegeta' });
   assert(/amazon\.com\/s\?k=/.test(amz), amz);
+  const ebayBand = ebayLinks.storeLinkForMatch({ source: 'ebay', title: 'Nemu Figure', price: 28 });
+  assert(/_udlo=/.test(ebayBand) && /_udhi=/.test(ebayBand), ebayBand);
+  const metaExact = ebayLinks.listingLinkMeta({
+    source: 'ebay',
+    title: 'x',
+    url: 'https://www.ebay.com/itm/999',
+    price: 20
+  });
+  assert(metaExact.exact);
+  assert(/anuncio/i.test(metaExact.label));
+  const metaSearch = ebayLinks.listingLinkMeta({ source: 'mercari', title: 'Nemu', price: 25 });
+  assert(!metaSearch.exact);
+  assert(/Buscar/i.test(metaSearch.label));
   assert(ebayLinks.storeLabel('cardmarket') === 'Cardmarket');
 });
 

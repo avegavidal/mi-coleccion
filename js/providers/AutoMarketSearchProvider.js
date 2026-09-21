@@ -6,7 +6,7 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl } from './EbayLinkProvider.js';
 
 function readGeminiApiKey() {
   try {
@@ -372,15 +372,17 @@ Return ONLY valid JSON (no markdown) with this shape:
   ]
 }
 Rules:
-- price must be a number in USD when possible (convert EUR if needed; note original).
+- price must be a number in USD when possible (convert EUR/JPY if needed; note original in "note").
 - Include 1–8 matches if found; empty array if none.
-- url: the product page on that store when you know it (https). If you only know the listing title, still set source correctly so we can open that store's search.
+- CRITICAL: "price" MUST be the price of the exact listing/product at "url". Do not invent prices.
+- Prefer REAL listing URLs: ebay.com/itm/..., amazon.com/dp/..., mercari.com/item/..., tcgplayer.com/product/...
+- If you cannot find the listing URL, set priceType to "estimate" and say so in note. Still set source correctly.
 ${tcg
     ? `- CRITICAL: at least one match MUST be TCGPlayer Market Price when available, with "source":"tcgplayer" and "priceType":"market" and note "TCGPlayer Market Price".
 - Prefer Near Mint Market Price; put foil / alternate art as separate matches.
 - Do NOT use Low Price as the main reference.`
     : '- If multiple variants exist, include several so the user can pick the ideal one.'}
-- If live data is unavailable, return 2–5 realistic estimates and set priceType to "estimate".`;
+- Never claim a store listing price without a matching product/listing url when one exists.`;
 
   const parts = [{ text: prompt }];
 
@@ -409,10 +411,10 @@ ${tcg
     generationConfig: { temperature: 0.2 }
   };
 
-  // Free tier: grounding a menudo falla con 429; probar plain primero, luego tools.
+  // Preferir grounding web primero: mejores URLs reales de anuncios.
   let lastErr = '';
   try {
-    const out = await geminiGenerateContent(apiKey, bodyPlain, {
+    const out = await geminiGenerateContent(apiKey, bodyWithTools, {
       signal: opts.signal,
       models: opts.models,
       preferModel: opts.preferModel
@@ -426,7 +428,7 @@ ${tcg
   }
 
   try {
-    const out = await geminiGenerateContent(apiKey, bodyWithTools, {
+    const out = await geminiGenerateContent(apiKey, bodyPlain, {
       signal: opts.signal,
       models: opts.models,
       preferModel: opts.preferModel
@@ -455,25 +457,29 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
     const m = raw[i] || {};
     const price = Number(m.price);
     if (!Number.isFinite(price) || price <= 0) continue;
+    const title = String(m.title || searchHint || 'Coincidencia').trim();
+    const source = String(m.source || 'web');
+    const rawUrl = typeof m.url === 'string' ? m.url.trim() : '';
+    const exact = isDirectListingUrl(rawUrl);
+    let priceType = String(m.priceType || inferPriceType(m)).toLowerCase();
+    // Sin anuncio real no presentamos el precio como listing exacto
+    if (!exact && priceType === 'listing') priceType = 'estimate';
+    const noteBase = m.note
+      ? String(m.note)
+      : (priceType === 'market'
+        ? 'TCGPlayer Market Price'
+        : (exact ? 'Anuncio web' : 'Precio orientativo (sin link de anuncio exacto)'));
     out.push({
-      id: `gem-${i}-${price}-${String(m.title || '').slice(0, 24)}`,
-      title: String(m.title || searchHint || 'Coincidencia').trim(),
+      id: `gem-${i}-${price}-${title.slice(0, 24)}`,
+      title,
       price,
       currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
-      source: String(m.source || 'web'),
-      priceType: String(m.priceType || inferPriceType(m)).toLowerCase(),
-      url: storeLinkForMatch({
-        source: String(m.source || 'web'),
-        title: String(m.title || searchHint || '').trim(),
-        url: m.url,
-        query: searchHint
-      }),
+      source,
+      priceType,
+      url: exact ? rawUrl : storeLinkForMatch({ source, title, url: rawUrl, query: searchHint, price }),
+      linkExact: exact,
       query: searchHint,
-      note: m.note
-        ? String(m.note)
-        : (String(m.priceType || '').toLowerCase() === 'market'
-          ? 'TCGPlayer Market Price'
-          : 'Encontrado por búsqueda web (IA)')
+      note: noteBase
     });
   }
   return out;

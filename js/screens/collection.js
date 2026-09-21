@@ -17,7 +17,7 @@ import {
   clearMarketCache
 } from '../services/marketPriceService.js';
 import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
-import { isTcgCardItem, storeLabel, storeLinkForMatch } from '../providers/EbayLinkProvider.js';
+import { isTcgCardItem, listingLinkMeta } from '../providers/EbayLinkProvider.js';
 import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 import { navigate } from '../utils/router.js';
 
@@ -766,21 +766,23 @@ function paintMarketResult(host, result, item, hooks = {}) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
       const chosen = result.chosenId === match.id
         || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
-      const href = storeLinkForMatch(match);
+      const link = listingLinkMeta(match);
+      const href = link.url;
       const row = el('article', {
-        className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}`
+        className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`
       }, [
         el('div', { className: 'market-match-main' }, [
           el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
           isMarketRef
             ? el('span', { className: 'market-ref-badge', text: 'Market Price' })
             : null,
+          !link.exact ? el('span', { className: 'market-ref-badge market-est-badge', text: 'Orientativo' }) : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
             className: 'muted small',
             text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
           }),
-          el('span', { className: 'market-match-open', text: `Abrir en ${storeLabel(match.source)} →` })
+          el('span', { className: 'market-match-open', text: link.label })
         ]),
         hooks.onChooseMatch
           ? el('div', { className: 'market-match-actions' }, [

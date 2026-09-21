@@ -17,7 +17,7 @@ import {
   classifyDeal,
   buildMarketProbeFromSuggestion
 } from '../services/marketPriceService.js';
-import { isTcgCardItem, storeLabel, storeLinkForMatch } from '../providers/EbayLinkProvider.js';
+import { isTcgCardItem, listingLinkMeta } from '../providers/EbayLinkProvider.js';
 import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 
 /** Estado de la sesión de identificación en memoria */
@@ -532,9 +532,10 @@ function paintIdentifyMarketBody(host, result, probe) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
-      const href = storeLinkForMatch(match);
+      const link = listingLinkMeta(match);
+      const href = link.url;
       const card = el('a', {
-        className: `market-match-card is-store-link${isMarketRef ? ' is-market-ref' : ''}`,
+        className: `market-match-card is-store-link${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`,
         href,
         target: '_blank',
         rel: 'noopener noreferrer'
@@ -542,12 +543,13 @@ function paintIdentifyMarketBody(host, result, probe) {
         el('div', { className: 'market-match-main' }, [
           el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
           isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null,
+          !link.exact ? el('span', { className: 'market-ref-badge market-est-badge', text: 'Orientativo' }) : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
             className: 'muted small',
             text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
           }),
-          el('span', { className: 'market-match-open', text: `Abrir en ${storeLabel(match.source)} →` })
+          el('span', { className: 'market-match-open', text: link.label })
         ])
       ]);
       card.addEventListener('click', (e) => {
