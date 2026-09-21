@@ -297,7 +297,19 @@ test('buildLooseQueries prioriza serie+personaje y código', () => {
   assert(qs.length >= 1);
   assert(qs.some((q) => /Figuarts/i.test(q) && /Goku/i.test(q)), qs.join(' | '));
   assert(qs.every((q) => !/Special Color Edition/i.test(q)));
-  assert(/Figuarts|Goku/i.test(qs[0]), `primary debería ser serie/personaje: ${qs[0]}`);
+  // Con nombre oficial, incluir "buy" / "for sale" para listados con precio
+  assert(qs.some((q) => /\bbuy\b/i.test(q) || /for sale/i.test(q)), qs.join(' | '));
+});
+
+test('buildLooseQueries figuras usa nombre + buy', () => {
+  const qs = market.buildLooseQueries({
+    manufacturer: 'Banpresto',
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu Kurotsuchi',
+    name: 'BLEACH Glitter & Glamours Nemu Kurotsuchi',
+    category: 'Figura'
+  });
+  assert(qs.some((q) => /Nemu/i.test(q) && /\bbuy\b/i.test(q)), qs.join(' | '));
 });
 
 function wordCountSafe(s) {

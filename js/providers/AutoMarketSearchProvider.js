@@ -418,7 +418,8 @@ function buildSearchQueries(item) {
   const character = clean(item?.character_name || item?.character);
   const itemNumber = clean(item?.item_number);
   const franchise = clean(item?.franchise);
-  const soft = soften(clean(item?.name));
+  const fullName = clean(item?.name);
+  const soft = soften(fullName);
   const tcg = isTcgCardItem(item);
   const parts = [];
 
@@ -430,17 +431,22 @@ function buildSearchQueries(item) {
     if (soft) parts.push(`${soft} TCG`);
     if (character && itemNumber) parts.push([character, itemNumber].join(' '));
   } else {
-    // Figuras: serie+personaje (+ figure) suele batir al título largo
+    // Nombre oficial + buy → listados con precio (eBay/Amazon/Mercari)
+    const buyBase = fullName || soft || [series, character].filter(Boolean).join(' ');
+    if (buyBase) {
+      parts.push(`${buyBase} buy`);
+      parts.push(`${buyBase} for sale`);
+    }
     if (series && character) {
-      parts.push([series, character, 'figure'].join(' '));
+      parts.push([series, character, 'figure', 'buy'].join(' '));
       parts.push([series, character, manufacturer].filter(Boolean).join(' '));
     }
-    if (manufacturer && character) parts.push([manufacturer, character, 'figure'].join(' '));
+    if (manufacturer && character) parts.push([manufacturer, character, 'figure', 'buy'].join(' '));
     if (soft) parts.push(soft);
     if (soft && !/\b(figure|figura|banpresto|nendoroid|figma|glitter)\b/i.test(soft)) {
-      parts.push(`${soft} figure`);
+      parts.push(`${soft} figure buy`);
     }
-    if (franchise && character) parts.push([franchise, character, 'figure'].join(' '));
+    if (franchise && character) parts.push([franchise, character, 'figure', 'buy'].join(' '));
     if (manufacturer && itemNumber) parts.push([manufacturer, itemNumber].join(' '));
   }
 
@@ -454,7 +460,7 @@ function buildSearchQueries(item) {
     seen.add(k);
     seen.add(`#${norm}`);
     out.push(q);
-    if (out.length >= 4) break;
+    if (out.length >= 5) break;
   }
   return out;
 }
@@ -472,7 +478,7 @@ function soften(name) {
     .trim()
     .split(/\s+/)
     .filter((w) => w.length > 1)
-    .slice(0, 6)
+    .slice(0, 8)
     .join(' ');
 }
 
@@ -513,6 +519,7 @@ Search TCGPlayer first and return the Market Price for the exact card (same set 
 You may also include Cardmarket trend / PriceCharting as secondary options, clearly labeled.`
     : `This item is a FIGURE (Banpresto / Bandai Spirits / Good Smile / scale / prize), NOT a trading card.
 Search eBay sold/active, AmiAmi, Mercari, Yahoo Auctions JP, Amazon for the FIGURE listing.
+IMPORTANT search style: use the exact product title + "buy" or "for sale" (e.g. "BLEACH Glitter & Glamours Nemu Kurotsuchi buy") to find listings with prices.
 DO NOT return TCGPlayer / Cardmarket / PriceCharting card prices even if a same-character TCG card exists.
 Include "figure", "Banpresto", or the figure line (e.g. Glitter & Glamours) in the match title when known.`}
 
@@ -868,10 +875,10 @@ export function filterDisplayMatches(matches, item) {
 async function searchPricesViaWebIndex(query, limit = 8, opts = {}) {
   const tcg = Boolean(opts.tcg);
   const qPrimary = encodeURIComponent(
-    tcg ? `${query} TCGPlayer "Market Price"` : `${query} figure price ebay OR amiami OR mercari`
+    tcg ? `${query} TCGPlayer "Market Price"` : `${query} buy OR "for sale" price ebay OR amiami OR mercari`
   );
   const qAlt = encodeURIComponent(
-    tcg ? `${query} card price` : `${query} Banpresto OR "prize figure" sold`
+    tcg ? `${query} card price` : `${query} Banpresto OR figure buy sold`
   );
   const targets = [
     `https://r.jina.ai/http://www.bing.com/search?q=${qPrimary}`,

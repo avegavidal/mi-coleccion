@@ -53,24 +53,29 @@ export function buildLooseQueries(item) {
   const series = cleanPart(item.series);
   const category = cleanPart(item.category);
   const softName = softenTitle(cleanPart(item.name));
+  const fullName = cleanPart(item.name);
   const tcg = isTcgCardItem(item);
 
   // Orden pensado para marketplaces: serie+personaje suele encontrar más
   // que fabricante+SKU (Amazon a menudo no indexa el número de artículo).
   const candidates = [];
+  if (!tcg && (fullName || softName)) {
+    candidates.push(`${fullName || softName} buy`);
+    candidates.push(`${fullName || softName} for sale`);
+  }
   if (!tcg && series && character) {
-    candidates.push(joinUnique([series, character, 'figure']));
+    candidates.push(joinUnique([series, character, 'figure', 'buy']));
   }
   if (series && character) {
     candidates.push(joinUnique([series, character, manufacturer].filter(Boolean)));
   }
   if (softName) candidates.push(softName);
   if (!tcg && softName && !/\b(figure|figura|banpresto|nendoroid)\b/i.test(softName)) {
-    candidates.push(`${softName} figure`);
+    candidates.push(`${softName} figure buy`);
   }
   if (tcg && softName) candidates.push(`${softName} TCG`);
   if (franchise && character) {
-    candidates.push(joinUnique(tcg ? [franchise, character] : [franchise, character, 'figure']));
+    candidates.push(joinUnique(tcg ? [franchise, character] : [franchise, character, 'figure', 'buy']));
   }
   if (manufacturer && itemNumber) candidates.push(joinUnique([manufacturer, itemNumber]));
   if (itemNumber && (series || franchise || character)) {
@@ -97,7 +102,7 @@ export function buildLooseQueries(item) {
     seen.add(key);
     seen.add(`#${norm}`);
     out.push(q);
-    if (out.length >= 4) break;
+    if (out.length >= 5) break;
   }
   return out;
 }
