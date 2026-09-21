@@ -565,29 +565,42 @@ test('hasUsefulMarketMatches exige precio > 0', () => {
   assert(autoM.hasUsefulMarketMatches([{ price: 12.5, title: 'x' }]));
 });
 
-test('hasReliableMarketMatches no acepta solo estimates/web', () => {
-  const item = { name: 'Glitter & Glamours Nemu', manufacturer: 'Banpresto', series: 'Glitter & Glamours', character_name: 'Nemu', category: 'Figura' };
-  assert(!autoM.hasReliableMarketMatches([], item));
-  assert(!autoM.hasReliableMarketMatches([
-    { title: 'algo', price: 20, source: 'web-snippet', priceType: 'estimate' }
-  ], item));
-  assert(!autoM.hasReliableMarketMatches([
-    { title: 'pista', price: 22, source: 'ebay', priceType: 'estimate', linkExact: false, score: 1 }
-  ], item));
-  assert(autoM.hasReliableMarketMatches([
+test('shouldStopMarketSearch figuras con 1 match decente (sin exigir URL exacta)', () => {
+  const fig = {
+    name: 'Glitter & Glamours Nemu Kurotsuchi',
+    manufacturer: 'Banpresto',
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu',
+    category: 'Figura'
+  };
+  assert(!autoM.shouldStopMarketSearch([], fig, 1));
+  assert(!autoM.shouldStopMarketSearch([
+    { title: 'ruido', price: 20, source: 'web-snippet', priceType: 'estimate', score: -4 }
+  ], fig, 1));
+  // Antes fallaba: listing sin /itm/ se trataba como estimate y nunca paraba
+  const scored = autoM.scoreAndSortMatches([
     {
-      title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto',
+      title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto figure',
       price: 28,
       source: 'ebay',
       priceType: 'listing',
-      linkExact: true,
-      url: 'https://www.ebay.com/itm/123456',
-      score: 8
+      linkExact: false,
+      url: 'https://www.ebay.com/sch/i.html?_nkw=Nemu'
     }
-  ], item));
-  assert(autoM.hasReliableMarketMatches([
-    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' }
-  ], { category: 'TCG', name: 'Charizard ex' }));
+  ], fig);
+  assert(scored[0].score >= 2, `score=${scored[0].score}`);
+  assert(autoM.shouldStopMarketSearch(scored, fig, 1));
+  assert(autoM.hasReliableMarketMatches(scored, fig));
+});
+
+test('shouldStopMarketSearch cartas prioriza Market Price TCG', () => {
+  const card = { category: 'TCG', name: 'Charizard ex', franchise: 'Pokemon' };
+  assert(autoM.shouldStopMarketSearch([
+    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price', score: 8 }
+  ], card, 1));
+  assert(!autoM.shouldStopMarketSearch([
+    { title: 'random', price: 5, source: 'ebay', priceType: 'listing', score: 1 }
+  ], card, 1));
 });
 
 test('scoreAndSortMatches penaliza TCG en figuras y prioriza anuncio exacto', () => {

@@ -431,27 +431,41 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     }
   };
 
+  let autoRefineDone = false;
+
   const runMarketLookup = (force = false) => {
     abortIdentifyMarket();
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     globalThis.__identifyMarketAbort = ac;
     cancelBtn?.classList.remove('hidden');
-    marketStatus.textContent = 'Buscando precios (flujo independiente)…';
+    marketStatus.textContent = 'Buscando precios…';
     latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
     paintMarket(buildInstantMarket(latestProbe, { imageUrl: previewUrl }));
 
     lookupMarketPrice(latestProbe, {
       imageUrl: previewUrl,
       signal: ac?.signal,
-      maxAttempts: force ? 40 : 24,
+      maxAttempts: force ? 10 : 6,
       onProgress: (p) => {
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
     }).then((marketResult) => {
       cancelBtn?.classList.add('hidden');
+      const nameBefore = suggestion?.name || '';
       applyWebIdentity(marketResult);
-      // Re-paint con probe ya refinado
+      const nameAfter = suggestion?.name || '';
       latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
+
+      const weak = marketResult.status !== 'found' || !marketResult.matches?.length;
+      const nameImproved = nameAfter && nameAfter !== nameBefore
+        && nameAfter.length >= Math.max(8, nameBefore.length);
+      if (!autoRefineDone && weak && nameImproved) {
+        autoRefineDone = true;
+        marketStatus.textContent = 'Identidad mejorada — buscando precio…';
+        runMarketLookup(true);
+        return;
+      }
+
       paintMarket(marketResult);
       marketStatus.textContent = marketResult.status === 'found'
         ? (marketResult.matches?.length > 1
@@ -469,27 +483,46 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
   };
 
   const runMarketPipeline = async () => {
-    marketStatus.textContent = 'Identificando pieza con IA + web…';
+    marketStatus.textContent = 'Identificando pieza…';
     setDetected(suggestion);
     const file = opts.file || globalThis.__identifyState?.file;
-    // Siempre intentar ID web (aunque OCR haya dado un nombre basura)
-    if (file) {
-      try {
-        const s = await identifyFigureFromPhoto(file, {
-          onProgress: (p) => {
-            if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
-          }
-        });
-        setDetected(preferBetterSuggestion(suggestion, s));
-        if (suggestion?.name) {
-          refreshCollectionByName(shell, suggestion, previewUrl);
+    const nameAtSearchStart = { value: '' };
+
+    const identifyPromise = file
+      ? identifyFigureFromPhoto(file, {
+        onProgress: (p) => {
+          if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
         }
-      } catch (err) {
+      }).then((s) => {
+        const better = preferBetterSuggestion(suggestion, s);
+        setDetected(better);
+        if (better?.name) refreshCollectionByName(shell, better, previewUrl);
+        return better;
+      }).catch((err) => {
         console.warn('[identify] vision for market failed', err);
-        marketStatus.textContent = 'Sin ID automática — busco precio por foto…';
-      }
+        return null;
+      })
+      : Promise.resolve(null);
+
+    await Promise.race([
+      identifyPromise,
+      new Promise((r) => setTimeout(r, 18000))
+    ]);
+
+    nameAtSearchStart.value = suggestion?.name || '';
+    if (!suggestion?.name) {
+      marketStatus.textContent = 'Busco precio por foto / datos parciales…';
     }
     runMarketLookup(false);
+
+    identifyPromise.then((better) => {
+      if (autoRefineDone || !better?.name) return;
+      if (better.name === nameAtSearchStart.value) return;
+      autoRefineDone = true;
+      setDetected(better);
+      marketStatus.textContent = 'Nombre confirmado — actualizando precio…';
+      runMarketLookup(true);
+    });
   };
 
   askingInput?.addEventListener('input', () => {

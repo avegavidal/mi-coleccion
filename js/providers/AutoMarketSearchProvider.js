@@ -61,8 +61,22 @@ export function hasUsefulMarketMatches(matches) {
 }
 
 /**
- * ¿Hay al menos una coincidencia suficientemente fiable para dejar de reintentar?
- * Un estimate / snippet web solo NO basta (evita “a veces bien, a veces mal”).
+ * Match “sólido” (anuncio exacto / market TCG / buen score).
+ * @param {MarketMatch} m
+ */
+export function isReliableMatch(m) {
+  if (!m || !(Number(m.price) > 0)) return false;
+  if (m.source === 'web-snippet') return false;
+  if (isTcgMarketPriceMatch(m)) return true;
+  if (m.linkExact && (m.score == null || m.score >= 1)) return true;
+  if ((m.score || 0) >= 3 && m.source !== 'web-snippet') return true;
+  if ((m.score || 0) >= 2 && m.priceType !== 'estimate') return true;
+  return false;
+}
+
+/**
+ * ¿Hay coincidencias suficientemente buenas para dejar de reintentar?
+ * Figuras: 1 match decente basta (si exigimos URL exacta, nunca termina).
  * @param {MarketMatch[]} matches
  * @param {object} [item]
  */
@@ -72,33 +86,42 @@ export function hasReliableMarketMatches(matches, item = null) {
   const scored = list.some((m) => m.score != null)
     ? list
     : scoreAndSortMatches(list, item || {});
-  if (isTcgCardItem(item)) {
-    if (scored.some(isTcgMarketPriceMatch)) return true;
-    return scored.some((m) => isReliableMatch(m) && String(m.source || '').toLowerCase() === 'tcgplayer');
-  }
-  const solid = scored.filter(isReliableMatch);
-  if (solid.length >= 1) return true;
-  // Dos listados distintos con score decente también sirven
-  const decent = scored.filter((m) =>
-    Number(m.price) > 0
-    && (m.score || 0) >= 3
-    && m.priceType !== 'estimate'
-    && m.source !== 'web-snippet'
-  );
-  return decent.length >= 2;
+  return shouldStopMarketSearch(scored, item, 99);
 }
 
 /**
- * @param {MarketMatch} m
+ * Criterio de parada por intento. Más permisivo en figuras para no loopear vacío.
+ * @param {MarketMatch[]} matches
+ * @param {object|null} item
+ * @param {number} attempt
  */
-export function isReliableMatch(m) {
-  if (!m || !(Number(m.price) > 0)) return false;
-  if (m.source === 'web-snippet') return false;
-  if (m.priceType === 'estimate' && !m.linkExact) return false;
-  if (isTcgMarketPriceMatch(m)) return true;
-  if (m.linkExact && (m.score == null || m.score >= 2)) return true;
-  if ((m.score || 0) >= 5 && m.priceType !== 'estimate') return true;
-  if ((m.score || 0) >= 4 && m.url && isDirectListingUrl(m.url)) return true;
+export function shouldStopMarketSearch(matches, item, attempt = 1) {
+  const list = matches || [];
+  if (!list.length) return false;
+  const scored = list.some((m) => m.score != null)
+    ? [...list].sort((a, b) => (b.score || 0) - (a.score || 0))
+    : scoreAndSortMatches(list, item || {});
+
+  const usable = scored.filter((m) =>
+    Number(m.price) > 0
+    && m.source !== 'web-snippet'
+    && (m.score || 0) >= 2
+  );
+
+  if (isTcgCardItem(item)) {
+    if (scored.some(isTcgMarketPriceMatch)) return true;
+    if (usable.some((m) => isReliableMatch(m) && /tcgplayer/i.test(String(m.source || '')))) return true;
+    // Tras varios intentos, cualquier precio TCGPlayer/carta útil
+    if (attempt >= 3 && usable.some((m) => /tcgplayer|cardmarket/i.test(String(m.source || '')))) return true;
+    if (attempt >= 5 && usable.length >= 1) return true;
+    return false;
+  }
+
+  // Figuras / cajas: 1 coincidencia decente → mostrar ya (no exigir /itm/)
+  if (usable.length >= 1) return true;
+  if (scored.some(isReliableMatch)) return true;
+  // Último recurso tras varios intentos: cualquier precio > 0 no-snippet
+  if (attempt >= 4 && scored.some((m) => Number(m.price) > 0 && m.source !== 'web-snippet')) return true;
   return false;
 }
 
@@ -116,7 +139,8 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   let matches = [];
   const errors = [];
   const apiKey = readGeminiApiKey();
-  const maxAttempts = opts.maxAttempts ?? (apiKey ? 40 : 2);
+  // Pocos intentos útiles > loop eterno sin resultados
+  const maxAttempts = opts.maxAttempts ?? (apiKey ? 6 : 2);
 
   const { resolveGeminiModels } = await import('../services/geminiClient.js');
   let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: true }) : [];
@@ -176,14 +200,14 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
     }
 
-    if (hasReliableMarketMatches(matches, item)) break;
+    if (shouldStopMarketSearch(matches, item, attempt)) break;
 
     // 2) eBay
     if (queries.length) {
       onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
       const provider = new EbayActiveProvider();
       for (const q of queries.slice(0, 3)) {
-        if (hasReliableMarketMatches(matches, item) && matches.length >= 3) break;
+        if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
         if (signal?.aborted) break;
         try {
           const live = await Promise.race([
@@ -199,11 +223,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
               price: Number(l.price),
               currency: live.currency || 'USD',
               source: 'ebay',
-              priceType: exact ? 'listing' : 'estimate',
+              priceType: exact ? 'listing' : 'listing',
               linkExact: exact,
               url: url || live.searchUrl || ebayMarketUrls(q).active,
               query: q,
-              note: exact ? 'Anuncio eBay (en venta)' : 'Resultado eBay (sin URL de anuncio)'
+              note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
             };
           });
           if (fromListings.length) {
@@ -236,10 +260,10 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       }
     }
 
-    if (hasReliableMarketMatches(matches, item)) break;
+    if (shouldStopMarketSearch(matches, item, attempt)) break;
 
-    // 3) Índice web solo como último recurso (ruido alto); no corta el loop por sí solo
-    if (queries[0] && attempt >= 2 && !hasUsefulMarketMatches(matches.filter((m) => m.source !== 'web-snippet'))) {
+    // 3) Índice web solo como último recurso (ruido alto)
+    if (queries[0] && attempt >= 2 && !shouldStopMarketSearch(matches, item, attempt)) {
       onProgress({ stage: 'web', attempt, message: `Índice web (último recurso, intento ${attempt})…` });
       try {
         const webMatches = await searchPricesViaWebIndex(queries[0], limit, { tcg: isTcgCardItem(item) });
@@ -250,17 +274,20 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       }
     }
 
-    if (hasReliableMarketMatches(matches, item)) break;
+    if (shouldStopMarketSearch(matches, item, attempt)) break;
 
     if (attempt >= maxAttempts) break;
 
-    const waitMs = Math.min(45000, Math.round(2500 * (1.45 ** Math.min(attempt - 1, 7))));
+    const hasSome = hasUsefulMarketMatches(matches);
+    const waitMs = hasSome
+      ? Math.min(6000, 1200 * attempt)
+      : Math.min(16000, Math.round(1800 * (1.35 ** Math.min(attempt - 1, 5))));
     onProgress({
       stage: 'wait',
       attempt,
-      message: hasUsefulMarketMatches(matches)
-        ? `Resultados flojos aún. Mejoro búsqueda (${attempt + 1}) en ${Math.round(waitMs / 1000)}s…`
-        : `Aún sin precio útil. Reintento ${attempt + 1} en ${Math.round(waitMs / 1000)}s…`
+      message: hasSome
+        ? `Mejorando resultados (${attempt + 1}/${maxAttempts})…`
+        : `Aún sin precio. Reintento ${attempt + 1}/${maxAttempts} en ${Math.round(waitMs / 1000)}s…`
     });
     await delay(waitMs, signal);
   }
@@ -545,8 +572,13 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
     const rawUrl = typeof m.url === 'string' ? m.url.trim() : '';
     const exact = isDirectListingUrl(rawUrl);
     let priceType = String(m.priceType || inferPriceType(m)).toLowerCase();
-    // Sin anuncio real no presentamos el precio como listing exacto
-    if (!exact && priceType === 'listing') priceType = 'estimate';
+    // Sin URL de anuncio: mantener listing en tiendas conocidas (la UI marca Orientativo).
+    // Solo forzar estimate si la fuente es desconocida o el modelo lo dijo.
+    if (!exact && priceType === 'listing') {
+      if (!/ebay|amazon|mercari|amiami|yahoo|mandarake|tcgplayer|cardmarket/i.test(source)) {
+        priceType = 'estimate';
+      }
+    }
     const noteBase = m.note
       ? String(m.note)
       : (priceType === 'market'
@@ -675,7 +707,7 @@ export function scoreAndSortMatches(matches, item) {
         if (title.includes(t.toLowerCase())) score += 2;
       }
       if (m.linkExact || isDirectListingUrl(m.url)) score += 4;
-      if (m.priceType === 'estimate') score -= 3;
+      if (m.priceType === 'estimate') score -= 1;
       if (src === 'web-snippet') score -= 6;
       if (isTcgMarketPriceMatch(m)) score += 6;
       else if (src === 'tcgplayer') score += tcgItem ? 3 : -8;

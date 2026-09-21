@@ -518,6 +518,7 @@ export async function renderItemDetail(root, params) {
     lookupMarketPrice(item, {
       imageUrl,
       signal: marketAbort?.signal,
+      maxAttempts: force ? 10 : 6,
       onProgress: (p) => {
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
