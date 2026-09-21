@@ -1,4 +1,4 @@
-import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatMoneyDual, formatDate } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatMoneyDual, formatDate, openExternal } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { itemCard } from './dashboard.js';
 import {
@@ -766,8 +766,9 @@ function paintMarketResult(host, result, item, hooks = {}) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
       const chosen = result.chosenId === match.id
         || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
+      const href = storeLinkForMatch(match);
       const row = el('article', {
-        className: `market-match-card${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}`
+        className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}`
       }, [
         el('div', { className: 'market-match-main' }, [
           el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
@@ -778,26 +779,24 @@ function paintMarketResult(host, result, item, hooks = {}) {
           el('p', {
             className: 'muted small',
             text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
-          })
-        ]),
-        el('div', { className: 'market-match-actions' }, [
-          el('a', {
-            className: 'btn btn-ghost',
-            href: storeLinkForMatch(match),
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            text: `Abrir en ${storeLabel(match.source)}`
           }),
-          hooks.onChooseMatch
-            ? el('button', {
+          el('span', { className: 'market-match-open', text: `Abrir en ${storeLabel(match.source)} →` })
+        ]),
+        hooks.onChooseMatch
+          ? el('div', { className: 'market-match-actions' }, [
+            el('button', {
               type: 'button',
               className: chosen ? 'btn btn-primary' : 'btn btn-ghost',
               text: chosen ? '✓ Ideal' : (isMarketRef ? 'Usar Market Price' : (matches.length > 1 ? 'Usar este' : 'Guardar')),
-              onClick: (e) => hooks.onChooseMatch(match, matches, e.currentTarget)
+              onClick: (e) => {
+                e.stopPropagation();
+                hooks.onChooseMatch(match, matches, e.currentTarget);
+              }
             })
-            : null
-        ])
+          ])
+          : null
       ]);
+      row.addEventListener('click', () => openExternal(href));
       list.append(row);
     }
     host.append(list);

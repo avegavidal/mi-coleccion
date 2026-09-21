@@ -463,6 +463,8 @@ test('identify/collection usan prepareImageForAnalysis', () => {
   assert(/buildMarketProbeFromSuggestion|buildIdentifyProbeItem/.test(idSrc));
   assert(/runCollectionTrack|wireMarketTrack|identify-tracks/.test(idSrc), 'dos flujos paralelos');
   assert(/Flujo 1|Flujo 2/.test(idSrc));
+  assert(/openExternal/.test(idSrc), 'tocar el precio debe abrir la tienda');
+  assert(/market-match-open/.test(idSrc));
 });
 
 await testAsync('buildMarketProbeFromSuggestion prioriza suggestion sobre match', async () => {

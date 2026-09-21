@@ -1,4 +1,4 @@
-import { el, toast, imageTypeLabel, setBusy, formatMoneyDual } from '../utils/dom.js';
+import { el, toast, imageTypeLabel, setBusy, formatMoneyDual, openExternal } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { navigate } from '../utils/router.js';
 import {
@@ -532,8 +532,12 @@ function paintIdentifyMarketBody(host, result, probe) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
-      list.append(el('article', {
-        className: `market-match-card${isMarketRef ? ' is-market-ref' : ''}`
+      const href = storeLinkForMatch(match);
+      const card = el('a', {
+        className: `market-match-card is-store-link${isMarketRef ? ' is-market-ref' : ''}`,
+        href,
+        target: '_blank',
+        rel: 'noopener noreferrer'
       }, [
         el('div', { className: 'market-match-main' }, [
           el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
@@ -542,18 +546,15 @@ function paintIdentifyMarketBody(host, result, probe) {
           el('p', {
             className: 'muted small',
             text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
-          })
-        ]),
-        el('div', { className: 'market-match-actions' }, [
-            el('a', {
-              className: 'btn btn-ghost',
-              href: storeLinkForMatch(match),
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              text: `Abrir en ${storeLabel(match.source)}`
-            })
-          ])
-      ]));
+          }),
+          el('span', { className: 'market-match-open', text: `Abrir en ${storeLabel(match.source)} →` })
+        ])
+      ]);
+      card.addEventListener('click', (e) => {
+        e.preventDefault();
+        openExternal(href);
+      });
+      list.append(card);
     }
     host.append(list);
   } else if (result.auto && (result.status === 'empty' || result.status === 'error')) {

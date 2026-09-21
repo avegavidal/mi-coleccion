@@ -1291,18 +1291,41 @@ a.stat-card:active {
 
 .market-match-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-1);
   border: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.market-match-card.is-store-link:active,
+.market-match-card.is-chosen {
+  border-color: var(--accent);
 }
 
 .market-match-card.is-chosen {
-  border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.market-match-open {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent-2);
+}
+
+.market-match-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .market-match-main {
@@ -1323,13 +1346,6 @@ a.stat-card:active {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.market-match-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex-shrink: 0;
 }
 
 .market-fallback {

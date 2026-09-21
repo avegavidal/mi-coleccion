@@ -28,6 +28,18 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+/**
+ * Abre una tienda fuera de la PWA (Safari en iPhone a veces ignora target=_blank).
+ * @param {string} url
+ */
+export function openExternal(url) {
+  const href = String(url || '').trim();
+  if (!/^https?:\/\//i.test(href)) return false;
+  const opened = window.open(href, '_blank', 'noopener,noreferrer');
+  if (!opened) window.location.assign(href);
+  return true;
+}
+
 export function toast(message, type = 'info') {
   let host = document.getElementById('toast-host');
   if (!host) {
