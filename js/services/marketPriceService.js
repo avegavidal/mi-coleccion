@@ -59,9 +59,10 @@ export function buildLooseQueries(item) {
   // Orden pensado para marketplaces: serie+personaje suele encontrar más
   // que fabricante+SKU (Amazon a menudo no indexa el número de artículo).
   const candidates = [];
-  if (!tcg && (fullName || softName)) {
-    candidates.push(`${fullName || softName} buy`);
-    candidates.push(`${fullName || softName} for sale`);
+  if (!tcg && (softName || fullName)) {
+    const buyBase = softName || fullName;
+    candidates.push(`${buyBase} buy`);
+    candidates.push(`${buyBase} for sale`);
   }
   if (!tcg && series && character) {
     candidates.push(joinUnique([series, character, 'figure', 'buy']));

@@ -431,8 +431,9 @@ function buildSearchQueries(item) {
     if (soft) parts.push(`${soft} TCG`);
     if (character && itemNumber) parts.push([character, itemNumber].join(' '));
   } else {
-    // Nombre oficial + buy → listados con precio (eBay/Amazon/Mercari)
-    const buyBase = fullName || soft || [series, character].filter(Boolean).join(' ');
+    // Nombre usable + buy → listados con precio (eBay/Amazon/Mercari)
+    // Usar soft (sin “Special Edition…”) para no buscar el título entero
+    const buyBase = soft || [series, character].filter(Boolean).join(' ') || fullName;
     if (buyBase) {
       parts.push(`${buyBase} buy`);
       parts.push(`${buyBase} for sale`);
