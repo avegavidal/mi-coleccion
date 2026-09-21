@@ -446,6 +446,8 @@ test('identify/collection usan prepareImageForAnalysis', () => {
   assert(/lookupMarketPrice/.test(idSrc), 'identify debe buscar precio de mercado');
   assert(/identify-market|Precio de mercado/.test(idSrc));
   assert(/buildMarketProbeFromSuggestion|buildIdentifyProbeItem/.test(idSrc));
+  assert(/runCollectionTrack|wireMarketTrack|identify-tracks/.test(idSrc), 'dos flujos paralelos');
+  assert(/Flujo 1|Flujo 2/.test(idSrc));
 });
 
 await testAsync('buildMarketProbeFromSuggestion prioriza suggestion sobre match', async () => {
@@ -462,6 +464,20 @@ await testAsync('buildMarketProbeFromSuggestion prioriza suggestion sobre match'
   });
   assert(fallback.name === 'FromMatch');
   assert(fallback.franchise === 'Zelda');
+});
+
+await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', async () => {
+  const vis = await import(pathToFileURL(join(root, 'js/services/visionIdentifyService.js')).href);
+  const ocr = { name: 'Thi The Vegeta 14', source: 'ocr', confidence: 'low' };
+  const web = { name: 'Dragon Ball Z G×materia The Vegeta', source: 'market-web', confidence: 'high', series: 'G×materia' };
+  const best = vis.preferBetterSuggestion(ocr, web);
+  assert(best.name.includes('G×materia') || /materia/i.test(best.name), best.name);
+  const fromMarket = vis.suggestionFromMarketMatches([
+    { title: 'Dragon Ball Z G×materia The Vegeta Banpresto', price: 28, source: 'ebay' },
+    { title: 'Thi The Vegeta 14', price: 5, source: 'other' }
+  ]);
+  assert(/materia|Vegeta/i.test(fromMarket.name), fromMarket.name);
+  assert(fromMarket.source === 'market-web');
 });
 
 test('CSS cropper overlay existe', () => {

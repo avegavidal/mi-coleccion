@@ -7,10 +7,10 @@ import {
   saveIdentificationHistory,
   checkWishlistHints
 } from '../services/recognitionService.js';
-import { incrementQuantity, getItem } from '../services/collectionService.js';
+import { incrementQuantity, getItem, listItems } from '../services/collectionService.js';
 import { getSignedUrls, listItemImages } from '../services/imageService.js';
 import { warmupEmbeddings } from '../services/embeddingService.js';
-import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
+import { identifyFigureFromPhoto, preferBetterSuggestion, suggestionFromMarketMatches } from '../services/visionIdentifyService.js';
 import {
   lookupMarketPrice,
   buildInstantMarket,
@@ -29,7 +29,10 @@ export async function renderIdentify(root) {
   root.append(el('div', { className: 'page identify-page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Identificar' }),
-      el('p', { className: 'page-sub', text: 'Toma la foto, compara con TU colección y mira el precio de mercado.' })
+      el('p', {
+        className: 'page-sub',
+        text: 'Dos búsquedas en paralelo: ¿la tienes? y ¿a qué precio está?'
+      })
     ]),
     el('div', { className: 'identify-actions' }, [
       el('label', { className: 'btn btn-primary btn-xl btn-block', html: '📷 Tomar foto<input type="file" accept="image/*" capture="environment" id="id-cam" hidden>' }),
@@ -52,20 +55,20 @@ export async function renderIdentify(root) {
     status.textContent = `Modelo no listo: ${err.message}. Revisa la conexión e inténtalo de nuevo.`;
   });
 
-  // Restaurar resultados si el usuario vuelve desde Comparación
   const prev = globalThis.__identifyState;
-  if (prev?.result && prev?.previewUrl) {
+  if (prev?.previewUrl && (prev.result || prev.marketResult || prev.suggestion)) {
     const workspace = root.querySelector('#id-workspace');
-    workspace.append(
-      el('section', { className: 'section' }, [
-        el('h2', { text: 'Foto analizada' }),
-        el('div', { className: 'preview-frame large' }, [el('img', { src: prev.previewUrl, alt: 'Foto nueva' })])
-      ])
-    );
-    renderResults(workspace, prev.result, prev.previewUrl, {
+    const shell = mountIdentifyShell(workspace, prev.previewUrl);
+    if (prev.result) {
+      paintCollectionTrack(shell.collectionBody, prev.result, prev.previewUrl);
+      shell.collectionStatus.textContent = 'Comparación con tu colección';
+    } else {
+      shell.collectionStatus.textContent = 'Sin resultado de colección guardado';
+    }
+    wireMarketTrack(shell, prev.previewUrl, {
       suggestion: prev.suggestion || null,
       marketResult: prev.marketResult || null,
-      file: prev.file || null
+      autoStart: !prev.marketResult
     });
   }
 
@@ -82,66 +85,25 @@ export async function renderIdentify(root) {
       return;
     }
 
-    workspace.innerHTML = '';
     const previewUrl = URL.createObjectURL(compressed);
-    workspace.append(
-      el('section', { className: 'section' }, [
-        el('h2', { text: 'Foto analizada' }),
-        el('div', { className: 'preview-frame large' }, [el('img', { src: previewUrl, alt: 'Foto nueva' })]),
-        el('p', { className: 'status-line', id: 'id-progress', text: 'Analizando…' })
-      ])
-    );
+    globalThis.__identifyState = {
+      file: compressed,
+      previewUrl,
+      result: null,
+      suggestion: null,
+      marketResult: null
+    };
 
-    try {
-      const progressLine = () => root.querySelector('#id-progress');
-      const [result, suggestion] = await Promise.all([
-        recognizeImage(compressed, {
-          onProgress: (p) => {
-            const line = progressLine();
-            if (line) line.textContent = p.message || p.stage;
-          },
-          onModelProgress: (p) => {
-            const line = progressLine();
-            if (line && p.progress != null) line.textContent = `Modelo ${p.progress}%`;
-          }
-        }),
-        identifyFigureFromPhoto(compressed, {
-          onProgress: (p) => {
-            const line = progressLine();
-            // No pisa el progreso CLIP si ya hay mensaje; se usa sobre todo para mercado
-            if (line && /gemini|ocr|identific/i.test(p.message || '')) {
-              line.textContent = p.message || p.stage;
-            }
-          }
-        }).catch((err) => {
-          console.warn('[identify] vision suggestion failed', err);
-          return null;
-        })
-      ]);
+    const shell = mountIdentifyShell(workspace, previewUrl);
 
-      globalThis.__identifyState = {
-        file: compressed,
-        previewUrl,
-        result,
-        suggestion,
-        marketResult: null
-      };
+    // Flujo A — colección (CLIP). Independiente.
+    runCollectionTrack(shell, compressed, previewUrl);
 
-      const line = progressLine();
-      if (line) line.remove();
-
-      renderResults(workspace, result, previewUrl, {
-        suggestion,
-        file: compressed,
-        startMarket: true
-      });
-    } catch (err) {
-      console.error(err);
-      const line = root.querySelector('#id-progress');
-      if (line) line.textContent = '';
-      toast(err.message || 'Error al identificar', 'error');
-      workspace.append(el('p', { className: 'error-text', text: err.message }));
-    }
+    // Flujo B — precio (visión + mercado). En paralelo, no espera a A.
+    wireMarketTrack(shell, previewUrl, {
+      file: compressed,
+      autoStart: true
+    });
   };
 
   root.querySelector('#id-cam').addEventListener('change', (e) => {
@@ -171,33 +133,109 @@ export function buildIdentifyProbeItem(suggestion, result) {
   return buildMarketProbeFromSuggestion(suggestion, result);
 }
 
-function renderResults(workspace, result, previewUrl, opts = {}) {
-  const existing = workspace.querySelector('#results-block');
-  if (existing) existing.remove();
-
-  const { strongMatches, weakMatches, hasClearMatch } = result;
-  const suggestion = opts.suggestion || null;
-  const block = el('div', { id: 'results-block' });
-
-  if (suggestion?.name) {
-    block.append(
-      el('div', { className: 'notice notice-info' }, [
-        el('p', {
-          text: `Detectado: ${suggestion.name}${suggestion.manufacturer ? ` · ${suggestion.manufacturer}` : ''}`
-        }),
-        el('p', {
-          className: 'muted small',
-          text: 'Usamos esto (y la foto) para buscar el precio de mercado abajo.'
-        })
+function mountIdentifyShell(workspace, previewUrl) {
+  workspace.innerHTML = '';
+  workspace.append(
+    el('section', { className: 'section' }, [
+      el('h2', { text: 'Foto' }),
+      el('div', { className: 'preview-frame large' }, [el('img', { src: previewUrl, alt: 'Foto nueva' })])
+    ]),
+    el('div', { className: 'identify-tracks', id: 'identify-tracks' }, [
+      el('section', { className: 'section identify-track identify-track-collection', id: 'track-collection' }, [
+        el('div', { className: 'identify-track-head' }, [
+          el('p', { className: 'identify-track-label', text: 'Flujo 1' }),
+          el('h2', { text: '¿La tengo en mi colección?' }),
+          el('p', { className: 'page-sub', text: 'Compara la foto con tus piezas (CLIP local).' })
+        ]),
+        el('p', { id: 'id-collection-status', className: 'status-line muted', text: 'Buscando en tu colección…' }),
+        el('div', { id: 'id-collection-body', className: 'identify-track-body' })
+      ]),
+      el('section', { className: 'section market-panel identify-track identify-track-market', id: 'track-market' }, [
+        el('div', { className: 'identify-track-head market-panel-head' }, [
+          el('p', { className: 'identify-track-label', text: 'Flujo 2' }),
+          el('h2', { text: 'Precio de mercado' }),
+          el('p', { className: 'page-sub', text: 'En paralelo: detecta la pieza y busca precio.' })
+        ]),
+        el('div', { className: 'market-toolbar' }, [
+          el('div', { id: 'id-market-status', className: 'status-line muted', text: '…' }),
+          el('button', { type: 'button', className: 'btn btn-ghost hidden', id: 'id-market-cancel', text: 'Detener' }),
+          el('button', { type: 'button', className: 'btn btn-ghost', id: 'id-market-refresh', text: 'Buscar de nuevo' })
+        ]),
+        el('p', { id: 'id-detected', className: 'muted small identify-detected' }),
+        el('div', { className: 'identify-ask-row' }, [
+          el('label', {}, [
+            el('span', { text: '¿A qué precio la viste? (opcional)' }),
+            el('input', {
+              className: 'input',
+              id: 'id-asking-price',
+              type: 'number',
+              step: '0.01',
+              min: '0',
+              inputmode: 'decimal',
+              placeholder: 'Ej. 45'
+            })
+          ])
+        ]),
+        el('div', { id: 'id-market-deal', className: 'market-deal hidden' }),
+        el('div', { id: 'id-market-body', className: 'market-body' })
       ])
-    );
+    ])
+  );
+
+  return {
+    collectionStatus: workspace.querySelector('#id-collection-status'),
+    collectionBody: workspace.querySelector('#id-collection-body'),
+    marketStatus: workspace.querySelector('#id-market-status'),
+    marketBody: workspace.querySelector('#id-market-body'),
+    marketDeal: workspace.querySelector('#id-market-deal'),
+    detectedEl: workspace.querySelector('#id-detected'),
+    askingInput: workspace.querySelector('#id-asking-price'),
+    cancelBtn: workspace.querySelector('#id-market-cancel'),
+    refreshBtn: workspace.querySelector('#id-market-refresh')
+  };
+}
+
+async function runCollectionTrack(shell, file, previewUrl) {
+  const { collectionStatus, collectionBody } = shell;
+  collectionStatus.textContent = 'Analizando y buscando en tu colección…';
+  collectionBody.innerHTML = '';
+  collectionBody.append(el('p', { className: 'muted', text: 'Esto no espera al precio de mercado.' }));
+
+  try {
+    const result = await recognizeImage(file, {
+      onProgress: (p) => {
+        if (collectionStatus) collectionStatus.textContent = p.message || p.stage || 'Buscando…';
+      },
+      onModelProgress: (p) => {
+        if (collectionStatus && p.progress != null) {
+          collectionStatus.textContent = `Modelo visual ${p.progress}%`;
+        }
+      }
+    });
+    if (globalThis.__identifyState) globalThis.__identifyState.result = result;
+    paintCollectionTrack(collectionBody, result, previewUrl);
+    const n = (result.strongMatches?.length || 0) + (result.weakMatches?.length || 0);
+    collectionStatus.textContent = n
+      ? `${n} posible${n === 1 ? '' : 's'} en tu colección`
+      : 'No aparece en tu colección';
+  } catch (err) {
+    console.error(err);
+    collectionStatus.textContent = err.message || 'Error al buscar en colección';
+    collectionBody.innerHTML = '';
+    collectionBody.append(el('p', { className: 'error-text', text: err.message }));
   }
+}
+
+function paintCollectionTrack(host, result, previewUrl) {
+  if (!host || !result) return;
+  host.innerHTML = '';
+  const { strongMatches, weakMatches } = result;
 
   if (!strongMatches.length) {
-    block.append(
+    host.append(
       el('div', { className: 'notice notice-warn' }, [
-        el('h2', { text: 'No encontramos una coincidencia clara en tu colección.' }),
-        el('p', { text: 'Puedes agregar esta pieza como nueva, o revisar las parecidas abajo.' }),
+        el('h3', { text: 'No hay coincidencia clara' }),
+        el('p', { text: 'Puedes agregarla como nueva cuando quieras.' }),
         el('button', {
           type: 'button',
           className: 'btn btn-primary btn-block',
@@ -210,34 +248,25 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
       ])
     );
   } else {
-    block.append(
-      el('section', { className: 'section' }, [
-        el('h2', { text: hasClearMatch ? 'Posibles coincidencias' : 'Posibles coincidencias' }),
-        el('p', { className: 'muted', text: 'La similitud es una orientación, no una certeza. Confirma tú.' }),
-        el('div', { className: 'match-list', id: 'strong-list' })
-      ])
+    host.append(
+      el('p', { className: 'muted', text: 'La similitud es orientación, no certeza. Confirma tú.' }),
+      el('div', { className: 'match-list', id: 'strong-list' })
     );
-  }
-
-  const strongList = block.querySelector('#strong-list') || block.appendChild(el('div', { className: 'match-list' }));
-  for (const m of strongMatches) {
-    strongList.append(matchCard(m, previewUrl));
+    const strongList = host.querySelector('#strong-list');
+    for (const m of strongMatches) strongList.append(matchCard(m, previewUrl));
   }
 
   if (weakMatches.length) {
-    block.append(
-      el('section', { className: 'section' }, [
-        el('h2', { text: 'Parecidas (coincidencia baja)' }),
-        el('p', { className: 'muted', text: 'Estas piezas son visualmente parecidas, pero la coincidencia es baja.' }),
-        el('div', { className: 'match-list', id: 'weak-list' })
-      ])
+    host.append(
+      el('h3', { text: 'Parecidas (baja)' }),
+      el('div', { className: 'match-list', id: 'weak-list' })
     );
-    const weakList = block.querySelector('#weak-list');
+    const weakList = host.querySelector('#weak-list');
     for (const m of weakMatches) weakList.append(matchCard(m, previewUrl));
   }
 
   if (strongMatches.length || weakMatches.length) {
-    block.append(
+    host.append(
       el('button', {
         type: 'button',
         className: 'btn btn-ghost btn-block',
@@ -255,45 +284,93 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
       })
     );
   }
+}
 
-  // Precio de mercado (antes de comprar / agregar)
-  const marketHost = el('section', { className: 'section market-panel identify-market', id: 'identify-market' }, [
-    el('div', { className: 'market-panel-head' }, [
-      el('h2', { text: 'Precio de mercado' }),
-      el('p', { className: 'page-sub', text: 'Para saber si el hallazgo está a buen precio' })
-    ]),
-    el('div', { className: 'market-toolbar' }, [
-      el('div', { id: 'id-market-status', className: 'status-line muted', text: '…' }),
-      el('button', { type: 'button', className: 'btn btn-ghost hidden', id: 'id-market-cancel', text: 'Detener' }),
-      el('button', { type: 'button', className: 'btn btn-ghost', id: 'id-market-refresh', text: 'Buscar de nuevo' })
-    ]),
-    el('div', { className: 'identify-ask-row' }, [
-      el('label', {}, [
-        el('span', { text: '¿A qué precio la viste? (opcional)' }),
-        el('input', {
-          className: 'input',
-          id: 'id-asking-price',
-          type: 'number',
-          step: '0.01',
-          min: '0',
-          inputmode: 'decimal',
-          placeholder: 'Ej. 45'
-        })
-      ])
-    ]),
-    el('div', { id: 'id-market-deal', className: 'market-deal hidden' }),
-    el('div', { id: 'id-market-body', className: 'market-body' })
-  ]);
-  block.append(marketHost);
-  workspace.append(block);
+/**
+ * Cuando la web da el nombre oficial, buscar también por texto en la colección.
+ */
+async function refreshCollectionByName(shell, suggestion, previewUrl) {
+  const name = String(suggestion?.name || '').trim();
+  if (!name || name.length < 4) return;
+  const { collectionBody, collectionStatus } = shell;
+  if (!collectionBody) return;
 
-  const probe = buildIdentifyProbeItem(suggestion, result);
-  const marketStatus = marketHost.querySelector('#id-market-status');
-  const marketBody = marketHost.querySelector('#id-market-body');
-  const marketDeal = marketHost.querySelector('#id-market-deal');
-  const askingInput = marketHost.querySelector('#id-asking-price');
-  const cancelBtn = marketHost.querySelector('#id-market-cancel');
-  const refreshBtn = marketHost.querySelector('#id-market-refresh');
+  // Query corta: serie + personaje o primeras palabras útiles
+  const tokens = name
+    .replace(/[^\p{L}\p{N}\s×x]/gu, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 2 && !/^(the|and|for|with|from|banpresto|bandai)$/i.test(t));
+  const q = [suggestion.series, suggestion.character_name, ...tokens.slice(0, 4)]
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 80) || name.slice(0, 60);
+
+  try {
+    const items = await listItems({ search: q, sort: 'name' });
+    if (!items.length) return;
+
+    const paths = items
+      .map((it) => (it.item_images || []).sort((a, b) => String(a.image_type).localeCompare(String(b.image_type)))[0]?.storage_path)
+      .filter(Boolean);
+    const urls = await getSignedUrls(paths);
+
+    const nameMatches = items.slice(0, 6).map((it) => {
+      const img = (it.item_images || [])[0];
+      return {
+        itemId: it.id,
+        name: it.name,
+        franchise: it.franchise,
+        manufacturer: it.manufacturer,
+        collectionName: it.collections?.name,
+        similarity: 0.92,
+        level: 'high',
+        bestImageUrl: img ? urls[img.storage_path] : null,
+        bestImageId: img?.id || null,
+        fromNameSearch: true
+      };
+    });
+
+    // Prefijar bloque de matches por nombre sin borrar CLIP si ya pintó
+    let nameHost = collectionBody.querySelector('#name-match-block');
+    if (!nameHost) {
+      nameHost = el('div', { id: 'name-match-block' });
+      collectionBody.prepend(nameHost);
+    }
+    nameHost.innerHTML = '';
+    nameHost.append(
+      el('p', {
+        className: 'muted small',
+        text: `Por nombre web (“${q}”) — ${nameMatches.length} en tu colección`
+      }),
+      el('div', { className: 'match-list', id: 'name-match-list' })
+    );
+    const list = nameHost.querySelector('#name-match-list');
+    for (const m of nameMatches) list.append(matchCard(m, previewUrl));
+
+    if (collectionStatus && /No aparece|Buscando|Analizando/i.test(collectionStatus.textContent || '')) {
+      collectionStatus.textContent = `${nameMatches.length} por nombre · revisa también similitud visual`;
+    }
+  } catch (err) {
+    console.warn('[identify] name search failed', err);
+  }
+}
+
+/**
+ * Flujo B: visión + mercado. No depende del flujo de colección.
+ */
+function wireMarketTrack(shell, previewUrl, opts = {}) {
+  const {
+    marketStatus,
+    marketBody,
+    marketDeal,
+    detectedEl,
+    askingInput,
+    cancelBtn,
+    refreshBtn
+  } = shell;
+
+  let suggestion = opts.suggestion || null;
+  let latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
 
   const paintDeal = (marketResult) => {
     if (!marketDeal) return;
@@ -318,7 +395,7 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
   };
 
   const paintMarket = (marketResult) => {
-    paintIdentifyMarketBody(marketBody, marketResult, probe);
+    paintIdentifyMarketBody(marketBody, marketResult, latestProbe);
     paintDeal(marketResult);
     if (globalThis.__identifyState) {
       globalThis.__identifyState.marketResult = marketResult;
@@ -326,15 +403,44 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
     }
   };
 
-  const runMarket = (force = false) => {
+  const setDetected = (s) => {
+    suggestion = s;
+    latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
+    if (detectedEl) {
+      const via = suggestion?.source === 'market-web'
+        ? ' (web/precios)'
+        : suggestion?.source === 'gemini-web'
+          ? ' (IA + web)'
+          : suggestion?.source === 'ocr'
+            ? ' (OCR — puede fallar)'
+            : '';
+      detectedEl.textContent = suggestion?.name
+        ? `Pieza: ${suggestion.name}${suggestion.manufacturer ? ` · ${suggestion.manufacturer}` : ''}${via}`
+        : 'Sin nombre detectado — se busca por foto.';
+    }
+    if (globalThis.__identifyState) globalThis.__identifyState.suggestion = suggestion;
+  };
+
+  const applyWebIdentity = (marketResult) => {
+    const fromMarket = suggestionFromMarketMatches(marketResult?.matches || []);
+    const better = preferBetterSuggestion(suggestion, fromMarket);
+    if (better && better !== suggestion) {
+      setDetected(better);
+      // Reconsulta colección por nombre oficial (paralelo al CLIP visual)
+      refreshCollectionByName(shell, better, previewUrl);
+    }
+  };
+
+  const runMarketLookup = (force = false) => {
     abortIdentifyMarket();
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     globalThis.__identifyMarketAbort = ac;
     cancelBtn?.classList.remove('hidden');
-    marketStatus.textContent = 'Buscando precios con la foto…';
-    paintMarket(buildInstantMarket(probe, { imageUrl: previewUrl }));
+    marketStatus.textContent = 'Buscando precios (flujo independiente)…';
+    latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
+    paintMarket(buildInstantMarket(latestProbe, { imageUrl: previewUrl }));
 
-    lookupMarketPrice(probe, {
+    lookupMarketPrice(latestProbe, {
       imageUrl: previewUrl,
       signal: ac?.signal,
       maxAttempts: force ? 40 : 24,
@@ -343,14 +449,15 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
       }
     }).then((marketResult) => {
       cancelBtn?.classList.add('hidden');
+      applyWebIdentity(marketResult);
+      // Re-paint con probe ya refinado
+      latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
       paintMarket(marketResult);
-      if (marketResult.status === 'found') {
-        marketStatus.textContent = marketResult.matches?.length > 1
-          ? `${marketResult.matches.length} precios — elige la referencia mental`
-          : 'Precio encontrado';
-      } else {
-        marketStatus.textContent = marketResult.note || 'Sin precio automático';
-      }
+      marketStatus.textContent = marketResult.status === 'found'
+        ? (marketResult.matches?.length > 1
+          ? `${marketResult.matches.length} precios · identidad: ${suggestion?.name || 'foto'}`
+          : `Precio encontrado · ${suggestion?.name || 'foto'}`)
+        : (marketResult.note || 'Sin precio automático');
     }).catch((err) => {
       cancelBtn?.classList.add('hidden');
       if (err?.name === 'AbortError') {
@@ -361,6 +468,30 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
     });
   };
 
+  const runMarketPipeline = async () => {
+    marketStatus.textContent = 'Identificando pieza con IA + web…';
+    setDetected(suggestion);
+    const file = opts.file || globalThis.__identifyState?.file;
+    // Siempre intentar ID web (aunque OCR haya dado un nombre basura)
+    if (file) {
+      try {
+        const s = await identifyFigureFromPhoto(file, {
+          onProgress: (p) => {
+            if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
+          }
+        });
+        setDetected(preferBetterSuggestion(suggestion, s));
+        if (suggestion?.name) {
+          refreshCollectionByName(shell, suggestion, previewUrl);
+        }
+      } catch (err) {
+        console.warn('[identify] vision for market failed', err);
+        marketStatus.textContent = 'Sin ID automática — busco precio por foto…';
+      }
+    }
+    runMarketLookup(false);
+  };
+
   askingInput?.addEventListener('input', () => {
     paintDeal(globalThis.__identifyState?.marketResult || null);
   });
@@ -369,16 +500,18 @@ function renderResults(workspace, result, previewUrl, opts = {}) {
     cancelBtn.classList.add('hidden');
     marketStatus.textContent = 'Deteniendo…';
   });
-  refreshBtn?.addEventListener('click', () => runMarket(true));
+  refreshBtn?.addEventListener('click', () => runMarketLookup(true));
 
   if (opts.marketResult) {
+    setDetected(suggestion);
     paintMarket(opts.marketResult);
     marketStatus.textContent = opts.marketResult.status === 'found'
       ? 'Precio de esta foto'
       : (opts.marketResult.note || 'Sin precio automático');
-  } else if (opts.startMarket || opts.file) {
-    runMarket(false);
+  } else if (opts.autoStart) {
+    runMarketPipeline();
   } else {
+    setDetected(suggestion);
     marketStatus.textContent = 'Pulsa “Buscar de nuevo” para precios';
   }
 }

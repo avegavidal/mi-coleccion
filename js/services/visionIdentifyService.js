@@ -49,11 +49,15 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
   const apiKey = getGeminiApiKey();
 
   if (apiKey) {
-    onProgress({ stage: 'gemini', message: 'Identificando figura con Gemini…' });
+    onProgress({ stage: 'gemini', message: 'Identificando figura con Gemini + web…' });
     try {
       const gemini = await identifyWithGemini(file, apiKey);
       if (gemini?.name) {
-        return { ...gemini, source: 'gemini', confidence: gemini.confidence || 'high' };
+        return {
+          ...gemini,
+          source: gemini.source || 'gemini-web',
+          confidence: gemini.confidence || 'high'
+        };
       }
     } catch (err) {
       console.warn('[vision] Gemini falló, uso OCR', err);
@@ -76,34 +80,59 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
 async function identifyWithGemini(file, apiKey) {
   const base64 = await blobToBase64(file);
   const mime = file.type || 'image/jpeg';
-  const prompt = `You identify collectibles from a photo: anime/game figures OR trading cards (Pokemon, MTG, Yu-Gi-Oh, One Piece, Lorcana, etc.).
+  const prompt = `You identify collectibles from a photo using LIVE web search when possible.
+Products: anime/game figures OR trading cards (Pokemon, MTG, Yu-Gi-Oh, One Piece, Lorcana, etc.).
+
+CRITICAL:
+- Prefer the OFFICIAL retail product title (Bandai, Good Smile, etc.), not OCR noise from the box.
+- Good examples: "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
+- Bad examples (never invent these): "Thi The Vegeta 14", random partial box text.
+- Include the line/series when known (G×materia, Ichibansho, Nendoroid, figma, S.H.Figuarts…).
+- Search retailers / listings if unsure.
+
 Return ONLY valid JSON (no markdown) with keys:
-name (string, product title people would search — for cards include set/code if visible),
+name (string, official searchable product title),
 manufacturer (string or null),
 franchise (string or null),
-series (string or null, e.g. Nendoroid / figma / Scarlet & Violet / Modern Horizons),
+series (string or null, e.g. G×materia / Nendoroid / Scarlet & Violet),
 character_name (string or null),
-item_number (string or null — collector number for cards),
+item_number (string or null),
 year (number or null),
-category (string or null — use "TCG" or "Carta" if it is a trading card),
-confidence ("high"|"medium"|"low").
-If unsure, still guess the best searchable product name. Prefer English or common romanization.`;
+category (string or null — use "TCG" or "Carta" if trading card),
+confidence ("high"|"medium"|"low").`;
 
   const { geminiGenerateContent, geminiTextFromResponse } = await import('./geminiClient.js');
-  const { data } = await geminiGenerateContent(apiKey, {
+  const bodyPlain = {
     contents: [{
       parts: [
         { text: prompt },
         { inline_data: { mime_type: mime, data: base64 } }
       ]
     }],
-    generationConfig: { temperature: 0.2 }
-  });
+    generationConfig: { temperature: 0.1 }
+  };
+  const bodyWithTools = {
+    ...bodyPlain,
+    tools: [{ google_search: {} }]
+  };
+
+  let data;
+  try {
+    // Misma estrategia que precios: grounding web → nombre oficial
+    const out = await geminiGenerateContent(apiKey, bodyWithTools);
+    data = out.data;
+  } catch {
+    const out = await geminiGenerateContent(apiKey, bodyPlain);
+    data = out.data;
+  }
 
   const text = geminiTextFromResponse(data);
   const parsed = parseJsonObject(text);
   if (!parsed) throw new Error('Gemini no devolvió JSON usable');
-  return normalizeSuggestion(parsed);
+  return {
+    ...normalizeSuggestion(parsed),
+    source: 'gemini-web'
+  };
 }
 
 /**
@@ -201,6 +230,8 @@ function detectSeries(text) {
   if (/pop up parade|popup parade/.test(lower)) return 'Pop Up Parade';
   if (/revoltech/.test(lower)) return 'Revoltech';
   if (/funko|pop!/.test(lower)) return 'Funko Pop';
+  if (/g\s*[x×]\s*materia|gxmateria/i.test(lower)) return 'G×materia';
+  if (/ichibansho|ichiban kuji/i.test(lower)) return 'Ichibansho';
   return null;
 }
 
@@ -263,6 +294,85 @@ function normalizeSuggestion(obj) {
     rawText: obj.rawText || null,
     note: obj.note || null
   };
+}
+
+/**
+ * Puntuación para elegir entre OCR basura vs nombre web oficial.
+ * @param {object|null} s
+ */
+export function scoreIdentitySuggestion(s) {
+  if (!s?.name) return -100;
+  const name = String(s.name);
+  let score = Math.min(name.length, 40);
+  if (s.source === 'market-web') score += 55;
+  if (s.source === 'gemini-web') score += 50;
+  if (s.source === 'gemini') score += 28;
+  if (s.source === 'ocr') score += 4;
+  if (s.confidence === 'high') score += 18;
+  if (s.confidence === 'medium') score += 8;
+  if (s.manufacturer) score += 10;
+  if (s.series) score += 12;
+  if (/g\s*[x×]\s*materia|nendoroid|figma|figuarts|ichiban|scale|statue/i.test(name)) score += 22;
+  // OCR basura típica
+  if (/^(thi|the|this|that)\b/i.test(name.trim())) score -= 40;
+  if (/\b\d{1,2}\b$/.test(name.trim()) && name.length < 22) score -= 15;
+  if ((name.match(/\bthe\b/gi) || []).length >= 2) score -= 20;
+  return score;
+}
+
+/**
+ * Elige la mejor identidad (web/mercado gana sobre OCR).
+ * @param {object|null} current
+ * @param {object|null} next
+ */
+export function preferBetterSuggestion(current, next) {
+  if (!next?.name) return current || null;
+  if (!current?.name) return next;
+  return scoreIdentitySuggestion(next) >= scoreIdentitySuggestion(current) ? next : current;
+}
+
+/**
+ * Nombre oficial a partir de títulos de coincidencias de mercado (web).
+ * @param {Array<{ title?: string, source?: string, price?: number }>} matches
+ */
+export function suggestionFromMarketMatches(matches) {
+  const list = (matches || []).filter((m) => m?.title && Number(m.price) > 0);
+  if (!list.length) return null;
+  const ranked = [...list].sort((a, b) => {
+    const aTcg = /tcgplayer/i.test(a.source || '') ? 1 : 0;
+    const bTcg = /tcgplayer/i.test(b.source || '') ? 1 : 0;
+    if (bTcg !== aTcg) return bTcg - aTcg;
+    return String(a.title).length - String(b.title).length;
+  });
+  const title = cleanMarketProductTitle(ranked[0].title);
+  if (!title || title.length < 4) return null;
+  const manufacturer = detectBrand(title);
+  const series = detectSeries(title);
+  return normalizeSuggestion({
+    name: title,
+    manufacturer,
+    franchise: null,
+    series,
+    character_name: null,
+    item_number: detectItemNumber(title),
+    year: null,
+    category: series,
+    confidence: 'high',
+    source: 'market-web',
+    note: 'Nombre tomado del resultado web de precios'
+  });
+}
+
+function cleanMarketProductTitle(raw) {
+  let s = String(raw || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(new|used|nib|misb|sold|auction|bid|lot)\b/gi, ' ')
+    .replace(/\$\s?\d+([.,]\d+)?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Quitar sufijos de listing largos
+  s = s.split(/\s[-–|]\s/)[0].trim();
+  return s.slice(0, 140);
 }
 
 function parseJsonObject(text) {
