@@ -17,7 +17,7 @@ import {
   classifyDeal,
   buildMarketProbeFromSuggestion
 } from '../services/marketPriceService.js';
-import { isTcgCardItem } from '../providers/EbayLinkProvider.js';
+import { isTcgCardItem, storeLabel, storeLinkForMatch } from '../providers/EbayLinkProvider.js';
 import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 
 /** Estado de la sesión de identificación en memoria */
@@ -544,17 +544,15 @@ function paintIdentifyMarketBody(host, result, probe) {
             text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
           })
         ]),
-        match.url
-          ? el('div', { className: 'market-match-actions' }, [
+        el('div', { className: 'market-match-actions' }, [
             el('a', {
               className: 'btn btn-ghost',
-              href: match.url,
+              href: storeLinkForMatch(match),
               target: '_blank',
               rel: 'noopener noreferrer',
-              text: 'Ver'
+              text: `Abrir en ${storeLabel(match.source)}`
             })
           ])
-          : null
       ]));
     }
     host.append(list);

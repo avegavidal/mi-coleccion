@@ -17,7 +17,7 @@ import {
   clearMarketCache
 } from '../services/marketPriceService.js';
 import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
-import { isTcgCardItem } from '../providers/EbayLinkProvider.js';
+import { isTcgCardItem, storeLabel, storeLinkForMatch } from '../providers/EbayLinkProvider.js';
 import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 import { navigate } from '../utils/router.js';
 
@@ -781,15 +781,13 @@ function paintMarketResult(host, result, item, hooks = {}) {
           })
         ]),
         el('div', { className: 'market-match-actions' }, [
-          match.url
-            ? el('a', {
-              className: 'btn btn-ghost',
-              href: match.url,
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              text: 'Ver'
-            })
-            : null,
+          el('a', {
+            className: 'btn btn-ghost',
+            href: storeLinkForMatch(match),
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            text: `Abrir en ${storeLabel(match.source)}`
+          }),
           hooks.onChooseMatch
             ? el('button', {
               type: 'button',

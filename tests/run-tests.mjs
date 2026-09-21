@@ -348,6 +348,21 @@ test('TCGPlayer y Cardmarket priorizados para cartas', () => {
   assert(/tcgplayer\.com\/search/.test(links[0].url));
 });
 
+test('storeLinkForMatch abre la tienda del precio', () => {
+  const direct = ebayLinks.storeLinkForMatch({
+    source: 'ebay',
+    title: 'Nendoroid Link',
+    url: 'https://www.ebay.com/itm/123'
+  });
+  assert(direct === 'https://www.ebay.com/itm/123');
+  const tcg = ebayLinks.storeLinkForMatch({ source: 'tcgplayer', title: 'Charizard ex 223' });
+  assert(/tcgplayer\.com\/search/.test(tcg), tcg);
+  assert(/Charizard/.test(decodeURIComponent(tcg)));
+  const amz = ebayLinks.storeLinkForMatch({ source: 'amazon', title: 'Gxmateria Vegeta' });
+  assert(/amazon\.com\/s\?k=/.test(amz), amz);
+  assert(ebayLinks.storeLabel('cardmarket') === 'Cardmarket');
+});
+
 test('enlaces visuales con imageUrl', () => {
   const links = ebayLinks.buildMarketLinks('test', { imageUrl: 'https://example.com/a.jpg' });
   const ids = links.map((l) => l.id);

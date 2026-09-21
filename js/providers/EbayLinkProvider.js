@@ -212,3 +212,78 @@ export function buildEbayQuery(item) {
     .filter(Boolean)
     .join(' ');
 }
+
+const STORE_LINK_IDS = {
+  ebay: 'ebay-active',
+  'ebay-sold': 'ebay-sold',
+  'ebay-active': 'ebay-active',
+  amazon: 'amazon-us',
+  'amazon-us': 'amazon-us',
+  'amazon.com': 'amazon-us',
+  'amazon-jp': 'amazon-jp',
+  'amazon.co.jp': 'amazon-jp',
+  mercari: 'mercari-us',
+  'mercari-us': 'mercari-us',
+  'mercari-jp': 'mercari-jp',
+  yahoo: 'yahoo-jp',
+  'yahoo-jp': 'yahoo-jp',
+  amiami: 'amiami',
+  mandarake: 'mandarake',
+  tcgplayer: 'tcgplayer',
+  cardmarket: 'cardmarket',
+  pricecharting: 'pricecharting'
+};
+
+/**
+ * Nombre corto de la tienda para el botón.
+ * @param {string} source
+ */
+export function storeLabel(source) {
+  const s = String(source || '').toLowerCase();
+  if (s.includes('tcgplayer')) return 'TCGPlayer';
+  if (s.includes('cardmarket')) return 'Cardmarket';
+  if (s.includes('pricechart')) return 'PriceCharting';
+  if (s.includes('amazon') && (s.includes('jp') || s.includes('.co.jp'))) return 'Amazon JP';
+  if (s.includes('amazon')) return 'Amazon';
+  if (s.includes('mercari') && s.includes('jp')) return 'Mercari JP';
+  if (s.includes('mercari')) return 'Mercari';
+  if (s.includes('yahoo')) return 'Yahoo JP';
+  if (s.includes('amiami')) return 'AmiAmi';
+  if (s.includes('mandarake')) return 'Mandarake';
+  if (s.includes('ebay')) return 'eBay';
+  return 'tienda';
+}
+
+/**
+ * URL para abrir el producto en su tienda.
+ * Si ya hay un enlace http real, se usa; si no, búsqueda de ESE título en esa tienda.
+ * @param {{ source?: string, title?: string, url?: string, query?: string }} match
+ */
+export function storeLinkForMatch(match) {
+  const direct = typeof match?.url === 'string' && /^https?:\/\//i.test(match.url.trim())
+    ? match.url.trim()
+    : '';
+  if (direct && !/example\.com|google\.com\/search\?/i.test(direct)) return direct;
+
+  const title = String(match?.title || match?.query || '').trim().slice(0, 140);
+  if (!title) return direct;
+  const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
+  const tcg = /tcg|cardmarket|pricechart|pokemon|yugioh|mtg/.test(s + title);
+  const links = buildShopLinksForQuery(title, { tcg });
+  let id = STORE_LINK_IDS[s] || '';
+  if (!id) {
+    if (s.includes('tcgplayer')) id = 'tcgplayer';
+    else if (s.includes('cardmarket')) id = 'cardmarket';
+    else if (s.includes('pricechart')) id = 'pricecharting';
+    else if (s.includes('amazon') && s.includes('jp')) id = 'amazon-jp';
+    else if (s.includes('amazon')) id = 'amazon-us';
+    else if (s.includes('mercari') && s.includes('jp')) id = 'mercari-jp';
+    else if (s.includes('mercari')) id = 'mercari-us';
+    else if (s.includes('yahoo')) id = 'yahoo-jp';
+    else if (s.includes('amiami')) id = 'amiami';
+    else if (s.includes('mandarake')) id = 'mandarake';
+    else if (s.includes('ebay')) id = 'ebay-active';
+    else id = tcg ? 'tcgplayer' : 'ebay-active';
+  }
+  return links.find((l) => l.id === id)?.url || direct || links[0]?.url || '';
+}

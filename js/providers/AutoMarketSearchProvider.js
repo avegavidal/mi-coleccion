@@ -6,7 +6,7 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, buildTcgShopLinks } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch } from './EbayLinkProvider.js';
 
 function readGeminiApiKey() {
   try {
@@ -374,7 +374,7 @@ Return ONLY valid JSON (no markdown) with this shape:
 Rules:
 - price must be a number in USD when possible (convert EUR if needed; note original).
 - Include 1–8 matches if found; empty array if none.
-- Do NOT invent URLs; omit url if unknown.
+- url: the product page on that store when you know it (https). If you only know the listing title, still set source correctly so we can open that store's search.
 ${tcg
     ? `- CRITICAL: at least one match MUST be TCGPlayer Market Price when available, with "source":"tcgplayer" and "priceType":"market" and note "TCGPlayer Market Price".
 - Prefer Near Mint Market Price; put foil / alternate art as separate matches.
@@ -462,7 +462,12 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
       currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
       source: String(m.source || 'web'),
       priceType: String(m.priceType || inferPriceType(m)).toLowerCase(),
-      url: typeof m.url === 'string' && m.url.startsWith('http') ? m.url : undefined,
+      url: storeLinkForMatch({
+        source: String(m.source || 'web'),
+        title: String(m.title || searchHint || '').trim(),
+        url: m.url,
+        query: searchHint
+      }),
       query: searchHint,
       note: m.note
         ? String(m.note)
@@ -611,15 +616,16 @@ async function searchPricesViaWebIndex(query, limit = 8) {
         if (!Number.isFinite(price) || price < 0.25 || price > 20000) continue;
         if (/cookie|privacy|sign in|results|filter/i.test(title)) continue;
         const isTcg = /tcg|cardmarket|pricecharting|pokemon|yugioh|mtg/i.test(title + url);
+        const source = isTcg ? 'tcgplayer' : 'ebay';
         out.push({
           id: `web-${out.length}-${price}`,
           title: title.slice(0, 160),
           price,
           currency: 'USD',
-          source: isTcg ? 'tcgplayer' : 'web',
+          source,
           query,
           note: isTcg ? 'Precio visto (TCG / web)' : 'Precio visto en búsqueda web',
-          url: buildTcgShopLinks(query)[0]?.url
+          url: storeLinkForMatch({ source, title: title.slice(0, 160), query })
         });
       }
       if (out.length) break;
