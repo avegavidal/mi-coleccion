@@ -53,15 +53,25 @@ export function buildLooseQueries(item) {
   const series = cleanPart(item.series);
   const category = cleanPart(item.category);
   const softName = softenTitle(cleanPart(item.name));
+  const tcg = isTcgCardItem(item);
 
   // Orden pensado para marketplaces: serie+personaje suele encontrar más
   // que fabricante+SKU (Amazon a menudo no indexa el número de artículo).
   const candidates = [];
+  if (!tcg && series && character) {
+    candidates.push(joinUnique([series, character, 'figure']));
+  }
   if (series && character) {
     candidates.push(joinUnique([series, character, manufacturer].filter(Boolean)));
   }
   if (softName) candidates.push(softName);
-  if (franchise && character) candidates.push(joinUnique([franchise, character]));
+  if (!tcg && softName && !/\b(figure|figura|banpresto|nendoroid)\b/i.test(softName)) {
+    candidates.push(`${softName} figure`);
+  }
+  if (tcg && softName) candidates.push(`${softName} TCG`);
+  if (franchise && character) {
+    candidates.push(joinUnique(tcg ? [franchise, character] : [franchise, character, 'figure']));
+  }
   if (manufacturer && itemNumber) candidates.push(joinUnique([manufacturer, itemNumber]));
   if (itemNumber && (series || franchise || character)) {
     candidates.push(joinUnique([itemNumber, series || franchise || character]));
@@ -87,7 +97,7 @@ export function buildLooseQueries(item) {
     seen.add(key);
     seen.add(`#${norm}`);
     out.push(q);
-    if (out.length >= 3) break;
+    if (out.length >= 4) break;
   }
   return out;
 }
@@ -219,8 +229,9 @@ export function profitSummary(purchasePrice, marketMedian) {
   return classifyDeal(purchasePrice, marketMedian);
 }
 
-const MARKET_CACHE_PREFIX = 'mi_coleccion_market_v1_';
-const MARKET_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
+const MARKET_CACHE_PREFIX = 'mi_coleccion_market_v2_';
+/** Caché corta: precios de mercado cambian; 3 días evita anclar un resultado flojo. */
+const MARKET_CACHE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
  * @param {string} itemId
@@ -245,10 +256,14 @@ export function loadMarketCache(itemId) {
  */
 export function saveMarketCache(itemId, result) {
   if (!itemId || !result) return;
+  // No persistir búsquedas vacías/error (evitar “congelar” un fallo)
+  const matches = result.matches || result.listings || [];
+  const status = result.status || (matches.length ? 'found' : 'empty');
+  if (status !== 'found' || !matches.length) return;
   try {
     const payload = {
-      status: result.status || (result.matches?.length ? 'found' : 'empty'),
-      matches: result.matches || result.listings || [],
+      status,
+      matches,
       median: result.median ?? null,
       low: result.low ?? null,
       high: result.high ?? null,
@@ -258,6 +273,7 @@ export function saveMarketCache(itemId, result) {
       note: result.note || '',
       source: result.source || 'cache',
       chosenId: result.chosenId || null,
+      reliable: Boolean(result.reliable),
       checkedAt: result.checkedAt || new Date().toISOString(),
       auto: true,
       fromCache: true
@@ -467,6 +483,7 @@ export async function lookupMarketPrice(item, options = {}) {
     currency: auto.currency || 'USD',
     note: auto.note,
     errors: auto.errors,
+    reliable: Boolean(auto.reliable),
     deal: classifyDeal(item?.purchase_price, auto.median),
     checkedAt: new Date().toISOString(),
     instant: false,

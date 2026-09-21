@@ -61,6 +61,48 @@ export function hasUsefulMarketMatches(matches) {
 }
 
 /**
+ * ¿Hay al menos una coincidencia suficientemente fiable para dejar de reintentar?
+ * Un estimate / snippet web solo NO basta (evita “a veces bien, a veces mal”).
+ * @param {MarketMatch[]} matches
+ * @param {object} [item]
+ */
+export function hasReliableMarketMatches(matches, item = null) {
+  const list = matches || [];
+  if (!list.length) return false;
+  const scored = list.some((m) => m.score != null)
+    ? list
+    : scoreAndSortMatches(list, item || {});
+  if (isTcgCardItem(item)) {
+    if (scored.some(isTcgMarketPriceMatch)) return true;
+    return scored.some((m) => isReliableMatch(m) && String(m.source || '').toLowerCase() === 'tcgplayer');
+  }
+  const solid = scored.filter(isReliableMatch);
+  if (solid.length >= 1) return true;
+  // Dos listados distintos con score decente también sirven
+  const decent = scored.filter((m) =>
+    Number(m.price) > 0
+    && (m.score || 0) >= 3
+    && m.priceType !== 'estimate'
+    && m.source !== 'web-snippet'
+  );
+  return decent.length >= 2;
+}
+
+/**
+ * @param {MarketMatch} m
+ */
+export function isReliableMatch(m) {
+  if (!m || !(Number(m.price) > 0)) return false;
+  if (m.source === 'web-snippet') return false;
+  if (m.priceType === 'estimate' && !m.linkExact) return false;
+  if (isTcgMarketPriceMatch(m)) return true;
+  if (m.linkExact && (m.score == null || m.score >= 2)) return true;
+  if ((m.score || 0) >= 5 && m.priceType !== 'estimate') return true;
+  if ((m.score || 0) >= 4 && m.url && isDirectListingUrl(m.url)) return true;
+  return false;
+}
+
+/**
  * @param {object} item
  * @param {{ imageUrl?: string|null, onProgress?: (p:{stage:string,message:string,attempt?:number})=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
  */
@@ -111,6 +153,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
           signal
         });
         matches = mergeMatches(matches, geminiMatches);
+        matches = scoreAndSortMatches(matches, item);
       } catch (err) {
         if (err.name === 'AbortError') throw err;
         errors.push(`Gemini #${attempt}: ${err.message}`);
@@ -133,33 +176,41 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
     }
 
-    if (hasUsefulMarketMatches(matches)) break;
+    if (hasReliableMarketMatches(matches, item)) break;
 
     // 2) eBay
     if (queries.length) {
       onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
       const provider = new EbayActiveProvider();
       for (const q of queries.slice(0, 3)) {
-        if (hasUsefulMarketMatches(matches) && matches.length >= 3) break;
+        if (hasReliableMarketMatches(matches, item) && matches.length >= 3) break;
         if (signal?.aborted) break;
         try {
           const live = await Promise.race([
             provider.lookup({ query: q, limit: 8 }),
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
           ]);
-          const fromListings = (live.listings || []).map((l, i) => ({
-            id: `ebay-${attempt}-${q}-${i}-${l.price}`,
-            title: l.title || q,
-            price: Number(l.price),
-            currency: live.currency || 'USD',
-            source: 'ebay',
-            url: l.url || live.searchUrl || ebayMarketUrls(q).active,
-            query: q,
-            note: 'Anuncio eBay (en venta)'
-          }));
+          const fromListings = (live.listings || []).map((l, i) => {
+            const url = l.url || '';
+            const exact = isDirectListingUrl(url);
+            return {
+              id: `ebay-${attempt}-${q}-${i}-${l.price}`,
+              title: l.title || q,
+              price: Number(l.price),
+              currency: live.currency || 'USD',
+              source: 'ebay',
+              priceType: exact ? 'listing' : 'estimate',
+              linkExact: exact,
+              url: url || live.searchUrl || ebayMarketUrls(q).active,
+              query: q,
+              note: exact ? 'Anuncio eBay (en venta)' : 'Resultado eBay (sin URL de anuncio)'
+            };
+          });
           if (fromListings.length) {
             matches = mergeMatches(matches, fromListings);
+            matches = scoreAndSortMatches(matches, item);
           } else if (live.median != null) {
+            // Resumen estadístico: útil como pista, no como “éxito” definitivo
             const synth = [];
             for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
               if (price == null) continue;
@@ -169,12 +220,15 @@ export async function autoSearchMarketMatches(item, opts = {}) {
                 price: Number(price),
                 currency: 'USD',
                 source: 'ebay',
+                priceType: 'estimate',
+                linkExact: false,
                 url: live.searchUrl,
                 query: q,
-                note: live.note || 'Resumen de precios eBay'
+                note: live.note || 'Resumen orientativo de precios eBay'
               });
             }
             matches = mergeMatches(matches, synth);
+            matches = scoreAndSortMatches(matches, item);
           }
         } catch (err) {
           errors.push(`eBay “${q}”: ${err.message}`);
@@ -182,20 +236,21 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       }
     }
 
-    if (hasUsefulMarketMatches(matches)) break;
+    if (hasReliableMarketMatches(matches, item)) break;
 
-    // 3) Web index
-    if (queries[0]) {
-      onProgress({ stage: 'web', attempt, message: `Índice web (intento ${attempt})…` });
+    // 3) Índice web solo como último recurso (ruido alto); no corta el loop por sí solo
+    if (queries[0] && attempt >= 2 && !hasUsefulMarketMatches(matches.filter((m) => m.source !== 'web-snippet'))) {
+      onProgress({ stage: 'web', attempt, message: `Índice web (último recurso, intento ${attempt})…` });
       try {
-        const webMatches = await searchPricesViaWebIndex(queries[0], limit);
+        const webMatches = await searchPricesViaWebIndex(queries[0], limit, { tcg: isTcgCardItem(item) });
         matches = mergeMatches(matches, webMatches);
+        matches = scoreAndSortMatches(matches, item);
       } catch (err) {
         errors.push(`Web: ${err.message}`);
       }
     }
 
-    if (hasUsefulMarketMatches(matches)) break;
+    if (hasReliableMarketMatches(matches, item)) break;
 
     if (attempt >= maxAttempts) break;
 
@@ -203,12 +258,16 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     onProgress({
       stage: 'wait',
       attempt,
-      message: `Aún sin precio útil. Reintento ${attempt + 1} en ${Math.round(waitMs / 1000)}s…`
+      message: hasUsefulMarketMatches(matches)
+        ? `Resultados flojos aún. Mejoro búsqueda (${attempt + 1}) en ${Math.round(waitMs / 1000)}s…`
+        : `Aún sin precio útil. Reintento ${attempt + 1} en ${Math.round(waitMs / 1000)}s…`
     });
     await delay(waitMs, signal);
   }
 
-  matches = scoreAndSortMatches(matches, item).slice(0, limit);
+  matches = scoreAndSortMatches(matches, item);
+  matches = flagPriceOutliers(matches);
+  matches = filterDisplayMatches(matches, item).slice(0, limit);
 
   const tcg = isTcgCardItem(item);
   if (tcg) {
@@ -232,10 +291,15 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
   const ref = tcg ? pickTcgReferenceMatch(matches) : null;
   const refPrice = ref?.price != null ? Number(ref.price) : null;
+  const medianPool = matches.filter((m) =>
+    m.priceType !== 'estimate' && m.source !== 'web-snippet'
+  );
+  const medianPrices = (medianPool.length ? medianPool : matches).map((m) => m.price);
   const median = refPrice != null && Number.isFinite(refPrice)
     ? refPrice
-    : (matches.length ? pickMedian(matches.map((m) => m.price)) : null);
+    : (medianPrices.length ? pickMedian(medianPrices) : null);
 
+  const reliable = hasReliableMarketMatches(matches, item);
   return {
     status,
     matches: useful ? matches : [],
@@ -246,6 +310,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     tcg,
     reference: tcg ? 'tcgplayer-market' : 'median',
     referenceMatchId: ref?.id || null,
+    reliable,
     sampleSize: useful ? matches.length : 0,
     low: useful ? Math.min(...matches.map((m) => m.price)) : null,
     median: useful ? median : null,
@@ -262,7 +327,9 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         ? (ref
           ? `Referencia: TCGPlayer Market Price $${Number(ref.price).toFixed(2)}. Elige la ideal si hay varias.`
           : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Prefiere la de Market Price.`)
-        : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`)
+        : (reliable
+          ? `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`
+          : `Encontré ${matches.length} pista${matches.length === 1 ? '' : 's'} (algunas orientativas). Revisa o pulsa “Buscar de nuevo”.`))
       : !apiKey
         ? 'Para precios automáticos: Configuración → pega tu Gemini API key. Sin ella los marketplaces bloquean la lectura automática.'
       : status === 'empty'
@@ -272,7 +339,6 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 }
 
 function buildSearchQueries(item) {
-  const parts = [];
   const manufacturer = clean(item?.manufacturer);
   const series = clean(item?.series);
   const character = clean(item?.character_name || item?.character);
@@ -280,34 +346,41 @@ function buildSearchQueries(item) {
   const franchise = clean(item?.franchise);
   const soft = soften(clean(item?.name));
   const tcg = isTcgCardItem(item);
+  const parts = [];
 
   if (tcg) {
-    // Cartas: nombre + set/número suelen encontrar mejor en TCGPlayer
     if (soft && (series || franchise || itemNumber)) {
       parts.push([soft, series || franchise, itemNumber].filter(Boolean).join(' '));
     }
     if (character && (series || franchise)) parts.push([character, series || franchise].join(' '));
     if (soft) parts.push(`${soft} TCG`);
+    if (character && itemNumber) parts.push([character, itemNumber].join(' '));
+  } else {
+    // Figuras: serie+personaje (+ figure) suele batir al título largo
+    if (series && character) {
+      parts.push([series, character, 'figure'].join(' '));
+      parts.push([series, character, manufacturer].filter(Boolean).join(' '));
+    }
+    if (manufacturer && character) parts.push([manufacturer, character, 'figure'].join(' '));
+    if (soft) parts.push(soft);
+    if (soft && !/\b(figure|figura|banpresto|nendoroid|figma|glitter)\b/i.test(soft)) {
+      parts.push(`${soft} figure`);
+    }
+    if (franchise && character) parts.push([franchise, character, 'figure'].join(' '));
+    if (manufacturer && itemNumber) parts.push([manufacturer, itemNumber].join(' '));
   }
-
-  if (series && character) parts.push([series, character, manufacturer].filter(Boolean).join(' '));
-  if (!tcg && series && character) parts.unshift([series, character, 'figure'].filter(Boolean).join(' '));
-  if (soft) parts.push(soft);
-  if (!tcg && soft && !/\bfigure|figura|banpresto|nendoroid\b/i.test(soft)) {
-    parts.push(`${soft} figure`);
-  }
-  if (franchise && character) parts.push([franchise, character].join(' '));
-  if (manufacturer && itemNumber) parts.push([manufacturer, itemNumber].join(' '));
-  if (manufacturer && character) parts.push([manufacturer, character].join(' '));
 
   const seen = new Set();
   const out = [];
   for (const q of parts) {
-    const k = q.toLowerCase();
-    if (!q || seen.has(k)) continue;
+    const k = q.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!k || seen.has(k)) continue;
+    const norm = k.split(/\s+/).sort().join(' ');
+    if (seen.has(`#${norm}`)) continue;
     seen.add(k);
+    seen.add(`#${norm}`);
     out.push(q);
-    if (out.length >= 3) break;
+    if (out.length >= 4) break;
   }
   return out;
 }
@@ -319,13 +392,13 @@ function clean(v) {
 function soften(name) {
   if (!name) return '';
   return name
-    .replace(/\b(ver\.?|version|exclusive|limited|edition|special|dx|figure|fig)\b/gi, ' ')
-    .replace(/[^\p{L}\p{N}\s\-]/gu, ' ')
+    .replace(/\b(ver\.?|version|exclusive|limited|edition|special|dx|pre-?order|re-?run)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s\-&]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .split(/\s+/)
     .filter((w) => w.length > 1)
-    .slice(0, 5)
+    .slice(0, 6)
     .join(' ');
 }
 
@@ -344,7 +417,8 @@ export async function searchMarketWithGemini(item, opts) {
     item?.series && `Series: ${item.series}`,
     item?.character_name && `Character: ${item.character_name}`,
     item?.item_number && `Item #: ${item.item_number}`,
-    item?.franchise && `Franchise: ${item.franchise}`
+    item?.franchise && `Franchise: ${item.franchise}`,
+    item?.category && `Category: ${item.category}`
   ].filter(Boolean).join('\n');
 
   const tcg = isTcgCardItem(item);
@@ -411,12 +485,12 @@ ${tcg
 
   const bodyPlain = {
     contents: [{ parts }],
-    generationConfig: { temperature: 0.2 }
+    generationConfig: { temperature: 0.1 }
   };
   const bodyWithTools = {
     contents: [{ parts }],
     tools: [{ google_search: {} }],
-    generationConfig: { temperature: 0.2 }
+    generationConfig: { temperature: 0.1 }
   };
 
   // Preferir grounding web primero: mejores URLs reales de anuncios.
@@ -429,7 +503,8 @@ ${tcg
     });
     const text = geminiTextFromResponse(out.data);
     const parsed = parseGeminiMarketMatches(text, searchHint);
-    if (hasUsefulMarketMatches(parsed)) return parsed;
+    // Devolver lo que haya; el loop decide si es fiable o hay que reintentar
+    if (parsed.length) return parsed;
   } catch (err) {
     if (err.name === 'AbortError') throw err;
     lastErr = err.message;
@@ -582,6 +657,7 @@ export function mergeMatches(a, b) {
  * @param {object} item
  */
 export function scoreAndSortMatches(matches, item) {
+  const tcgItem = isTcgCardItem(item);
   const tokens = [
     item?.series, item?.character_name, item?.character, item?.manufacturer,
     item?.item_number, item?.franchise, ...(String(item?.name || '').split(/\s+/))
@@ -592,26 +668,102 @@ export function scoreAndSortMatches(matches, item) {
   return [...(matches || [])]
     .map((m) => {
       const title = String(m.title || '').toLowerCase();
+      const src = String(m.source || '').toLowerCase();
+      const blob = `${title} ${src} ${m.note || ''}`.toLowerCase();
       let score = 0;
       for (const t of tokens) {
         if (title.includes(t.toLowerCase())) score += 2;
       }
-      if (m.source === 'tcgplayer') score += 2;
-      if (m.source === 'ebay' || m.source === 'cardmarket') score += 1;
-      if (isTcgMarketPriceMatch(m)) score += 5;
-      if (m.url) score += 0.5;
+      if (m.linkExact || isDirectListingUrl(m.url)) score += 4;
+      if (m.priceType === 'estimate') score -= 3;
+      if (src === 'web-snippet') score -= 6;
+      if (isTcgMarketPriceMatch(m)) score += 6;
+      else if (src === 'tcgplayer') score += tcgItem ? 3 : -8;
+      if (src === 'ebay' || src === 'amiami' || src === 'mercari' || src === 'yahoo') score += 2;
+      if (src === 'amazon') score += 1;
+      if (src === 'cardmarket' || src === 'pricecharting') score += tcgItem ? 2 : -8;
+      // Penalizar cruce figura ↔ carta
+      if (!tcgItem && /tcgplayer|cardmarket|pricecharting|trading\s*card|\bholo\b|\bnm\b\s*market/i.test(blob)) {
+        score -= 10;
+      }
+      if (tcgItem && /\b(banpresto|nendoroid|figma|glitter\s*&?\s*glamours|prize\s*figure|scale\s*figure)\b/i.test(blob)) {
+        score -= 8;
+      }
+      if (!tcgItem && /\b(figure|figura|banpresto|nendoroid|glitter|figma|amiami)\b/i.test(blob)) {
+        score += 2;
+      }
       return { ...m, score };
     })
     .sort((a, b) => (b.score - a.score) || (a.price - b.price));
 }
 
-async function searchPricesViaWebIndex(query, limit = 8) {
-  const qCard = encodeURIComponent(`${query} TCGPlayer "Market Price"`);
-  const qFig = encodeURIComponent(`${query} figure price ebay OR amazon`);
+/**
+ * Baja score de precios muy lejos de la mediana (ruido).
+ * @param {MarketMatch[]} matches
+ */
+export function flagPriceOutliers(matches) {
+  const list = matches || [];
+  const prices = list
+    .filter((m) => m.priceType !== 'estimate' && m.source !== 'web-snippet')
+    .map((m) => Number(m.price))
+    .filter((p) => Number.isFinite(p) && p > 0);
+  if (prices.length < 3) return list;
+  const med = pickMedian(prices);
+  if (!med) return list;
+  return list.map((m) => {
+    const p = Number(m.price);
+    if (!(p > 0)) return m;
+    if (p > med * 3.5 || p < med / 3.5) {
+      return {
+        ...m,
+        score: (m.score || 0) - 4,
+        note: `${m.note || 'Coincidencia'} · precio atípico vs resto`.trim()
+      };
+    }
+    return m;
+  }).sort((a, b) => (b.score || 0) - (a.score || 0) || (a.price - b.price));
+}
+
+/**
+ * Quita matches irrelevantes si hay mejores; si solo hay flojos, deja los top.
+ * @param {MarketMatch[]} matches
+ * @param {object} item
+ */
+export function filterDisplayMatches(matches, item) {
+  const list = matches || [];
+  if (!list.length) return list;
+  const tcgItem = isTcgCardItem(item);
+  const filtered = list.filter((m) => {
+    const blob = `${m.title || ''} ${m.source || ''} ${m.note || ''}`.toLowerCase();
+    if (!tcgItem && /tcgplayer|cardmarket|pricecharting/.test(String(m.source || '').toLowerCase()) && (m.score || 0) < 2) {
+      return false;
+    }
+    if (!tcgItem && /\b(trading\s*card|tcg\s*market)\b/i.test(blob) && (m.score || 0) < 3) {
+      return false;
+    }
+    if ((m.score || 0) < 0 && list.some((x) => (x.score || 0) >= 3)) return false;
+    return true;
+  });
+  const keep = filtered.length ? filtered : list;
+  // Si hay al menos un fiable, oculta web-snippet
+  if (keep.some(isReliableMatch)) {
+    return keep.filter((m) => m.source !== 'web-snippet');
+  }
+  return keep;
+}
+
+async function searchPricesViaWebIndex(query, limit = 8, opts = {}) {
+  const tcg = Boolean(opts.tcg);
+  const qPrimary = encodeURIComponent(
+    tcg ? `${query} TCGPlayer "Market Price"` : `${query} figure price ebay OR amiami OR mercari`
+  );
+  const qAlt = encodeURIComponent(
+    tcg ? `${query} card price` : `${query} Banpresto OR "prize figure" sold`
+  );
   const targets = [
-    `https://r.jina.ai/http://www.bing.com/search?q=${qCard}`,
-    `https://r.jina.ai/http://www.bing.com/search?q=${qFig}`,
-    `https://r.jina.ai/http://html.duckduckgo.com/html/?q=${qCard}`
+    `https://r.jina.ai/http://www.bing.com/search?q=${qPrimary}`,
+    `https://r.jina.ai/http://www.bing.com/search?q=${qAlt}`,
+    `https://r.jina.ai/http://html.duckduckgo.com/html/?q=${qPrimary}`
   ];
   const out = [];
   for (const url of targets) {
@@ -629,17 +781,23 @@ async function searchPricesViaWebIndex(query, limit = 8) {
         const price = Number(String(m[2]).replace(/,/g, ''));
         if (!Number.isFinite(price) || price < 0.25 || price > 20000) continue;
         if (/cookie|privacy|sign in|results|filter/i.test(title)) continue;
-        const isTcg = /tcg|cardmarket|pricecharting|pokemon|yugioh|mtg/i.test(title + url);
-        const source = isTcg ? 'tcgplayer' : 'ebay';
+        // No fingir fuente TCGPlayer: son snippets ruidosos
         out.push({
           id: `web-${out.length}-${price}`,
           title: title.slice(0, 160),
           price,
           currency: 'USD',
-          source,
+          source: 'web-snippet',
+          priceType: 'estimate',
+          linkExact: false,
           query,
-          note: isTcg ? 'Precio visto (TCG / web)' : 'Precio visto en búsqueda web',
-          url: storeLinkForMatch({ source, title: title.slice(0, 160), query })
+          note: 'Pista web (orientativa)',
+          url: storeLinkForMatch({
+            source: tcg ? 'tcgplayer' : 'ebay',
+            title: title.slice(0, 160),
+            query,
+            price
+          })
         });
       }
       if (out.length) break;

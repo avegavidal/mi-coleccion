@@ -565,6 +565,53 @@ test('hasUsefulMarketMatches exige precio > 0', () => {
   assert(autoM.hasUsefulMarketMatches([{ price: 12.5, title: 'x' }]));
 });
 
+test('hasReliableMarketMatches no acepta solo estimates/web', () => {
+  const item = { name: 'Glitter & Glamours Nemu', manufacturer: 'Banpresto', series: 'Glitter & Glamours', character_name: 'Nemu', category: 'Figura' };
+  assert(!autoM.hasReliableMarketMatches([], item));
+  assert(!autoM.hasReliableMarketMatches([
+    { title: 'algo', price: 20, source: 'web-snippet', priceType: 'estimate' }
+  ], item));
+  assert(!autoM.hasReliableMarketMatches([
+    { title: 'pista', price: 22, source: 'ebay', priceType: 'estimate', linkExact: false, score: 1 }
+  ], item));
+  assert(autoM.hasReliableMarketMatches([
+    {
+      title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto',
+      price: 28,
+      source: 'ebay',
+      priceType: 'listing',
+      linkExact: true,
+      url: 'https://www.ebay.com/itm/123456',
+      score: 8
+    }
+  ], item));
+  assert(autoM.hasReliableMarketMatches([
+    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' }
+  ], { category: 'TCG', name: 'Charizard ex' }));
+});
+
+test('scoreAndSortMatches penaliza TCG en figuras y prioriza anuncio exacto', () => {
+  const item = { name: 'Nemu Kurotsuchi', manufacturer: 'Banpresto', series: 'Glitter & Glamours', character_name: 'Nemu', category: 'Figura' };
+  const ranked = autoM.scoreAndSortMatches([
+    { title: 'Nemu Kurotsuchi TCGPlayer card', price: 5, source: 'tcgplayer', priceType: 'market' },
+    { title: 'Glitter & Glamours Nemu Kurotsuchi Banpresto figure', price: 32, source: 'ebay', priceType: 'listing', linkExact: true, url: 'https://www.ebay.com/itm/99' },
+    { title: 'random', price: 10, source: 'web-snippet', priceType: 'estimate' }
+  ], item);
+  assert(ranked[0].source === 'ebay', ranked[0].source);
+  assert(ranked[0].linkExact);
+  assert(ranked.find((m) => m.source === 'tcgplayer').score < ranked[0].score);
+});
+
+test('filterDisplayMatches oculta snippets si hay match fiable', () => {
+  const item = { name: 'Nendoroid Link', series: 'Nendoroid', character_name: 'Link', category: 'Figura' };
+  const out = autoM.filterDisplayMatches([
+    { title: 'Nendoroid Link Twilight Princess', price: 55, source: 'ebay', priceType: 'listing', linkExact: true, url: 'https://www.ebay.com/itm/1', score: 9 },
+    { title: 'noise $', price: 3, source: 'web-snippet', priceType: 'estimate', score: -2 }
+  ], item);
+  assert(out.length === 1);
+  assert(out[0].source === 'ebay');
+});
+
 test('autoSearch reintento usa delay local (no sleep importado)', () => {
   const src = readFileSync(join(root, 'js/providers/AutoMarketSearchProvider.js'), 'utf8');
   assert(/function delay\(/.test(src), 'debe definir delay local');
