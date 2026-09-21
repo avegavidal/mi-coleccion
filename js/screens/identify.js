@@ -1,4 +1,4 @@
-import { el, toast, imageTypeLabel, setBusy, formatMoneyDual, openExternal } from '../utils/dom.js';
+import { el, toast, imageTypeLabel, setBusy, formatMoneyDual, openExternal, setMarketSearching } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { navigate } from '../utils/router.js';
 import {
@@ -162,6 +162,13 @@ function mountIdentifyShell(workspace, previewUrl) {
           el('button', { type: 'button', className: 'btn btn-ghost hidden', id: 'id-market-cancel', text: 'Detener' }),
           el('button', { type: 'button', className: 'btn btn-ghost', id: 'id-market-refresh', text: 'Buscar de nuevo' })
         ]),
+        el('div', {
+          className: 'market-search-progress',
+          id: 'id-market-progress',
+          role: 'progressbar',
+          'aria-label': 'Buscando precio de mercado',
+          'aria-hidden': 'true'
+        }),
         el('p', { id: 'id-detected', className: 'muted small identify-detected' }),
         el('div', { className: 'identify-ask-row' }, [
           el('label', {}, [
@@ -187,6 +194,8 @@ function mountIdentifyShell(workspace, previewUrl) {
     collectionStatus: workspace.querySelector('#id-collection-status'),
     collectionBody: workspace.querySelector('#id-collection-body'),
     marketStatus: workspace.querySelector('#id-market-status'),
+    marketProgress: workspace.querySelector('#id-market-progress'),
+    marketPanel: workspace.querySelector('#track-market'),
     marketBody: workspace.querySelector('#id-market-body'),
     marketDeal: workspace.querySelector('#id-market-deal'),
     detectedEl: workspace.querySelector('#id-detected'),
@@ -367,8 +376,12 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     detectedEl,
     askingInput,
     cancelBtn,
-    refreshBtn
+    refreshBtn,
+    marketProgress,
+    marketPanel
   } = shell;
+
+  const showSearching = (on) => setMarketSearching(marketProgress, on, marketPanel);
 
   let suggestion = opts.suggestion || null;
   let latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
@@ -448,6 +461,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     globalThis.__identifyMarketAbort = ac;
     const gen = ++lookupGen;
     cancelBtn?.classList.remove('hidden');
+    showSearching(true);
     marketStatus.textContent = 'Buscando precios…';
     latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
     paintMarket(buildInstantMarket(latestProbe, { imageUrl: previewUrl }));
@@ -464,6 +478,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       }
     }).then((marketResult) => {
       if (gen !== lookupGen) return;
+      showSearching(false);
       cancelBtn?.classList.add('hidden');
       const nameBefore = suggestion?.name || '';
       applyWebIdentity(marketResult);
@@ -488,6 +503,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
         : (marketResult.note || 'Sin precio automático');
     }).catch((err) => {
       if (gen !== lookupGen) return; // reemplazada por otra búsqueda — ignorar
+      showSearching(false);
       cancelBtn?.classList.add('hidden');
       if (err?.name === 'AbortError') {
         if (userCancelled) {
@@ -513,6 +529,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
 
   const runMarketPipeline = async () => {
     marketStatus.textContent = 'Identificando pieza…';
+    showSearching(true);
     setDetected(suggestion);
     const file = opts.file || globalThis.__identifyState?.file;
 
@@ -549,6 +566,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
   cancelBtn?.addEventListener('click', () => {
     userCancelled = true;
     abortIdentifyMarket();
+    showSearching(false);
     cancelBtn.classList.add('hidden');
     marketStatus.textContent = 'Deteniendo…';
   });

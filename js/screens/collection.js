@@ -1,4 +1,4 @@
-import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatMoneyDual, formatDate, openExternal } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatMoneyDual, formatDate, openExternal, setMarketSearching } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { itemCard } from './dashboard.js';
 import {
@@ -384,6 +384,13 @@ export async function renderItemDetail(root, params) {
           text: 'Buscar de nuevo'
         })
       ]),
+      el('div', {
+        className: 'market-search-progress',
+        id: 'market-progress',
+        role: 'progressbar',
+        'aria-label': 'Buscando precio de mercado',
+        'aria-hidden': 'true'
+      }),
       el('div', { id: 'market-profit', className: 'market-profit hidden' }),
       el('div', { id: 'market-body', className: 'market-body' }),
       el('div', { className: 'market-actions', id: 'market-actions' })
@@ -398,9 +405,12 @@ export async function renderItemDetail(root, params) {
   const marketBody = root.querySelector('#market-body');
   const marketActions = root.querySelector('#market-actions');
   const marketStatus = root.querySelector('#market-status');
+  const marketProgress = root.querySelector('#market-progress');
+  const marketPanel = root.querySelector('#market-panel');
   const marketProfit = root.querySelector('#market-profit');
   const marketRefreshBtn = root.querySelector('#market-refresh');
   const marketCancelBtn = root.querySelector('#market-cancel');
+  const showMarketSearching = (on) => setMarketSearching(marketProgress, on, marketPanel);
   let marketAbort = null;
   let marketLookupGen = 0;
   let userCancelledMarket = false;
@@ -522,6 +532,7 @@ export async function renderItemDetail(root, params) {
     const gen = ++marketLookupGen;
     userCancelledMarket = false;
     if (marketCancelBtn) marketCancelBtn.classList.remove('hidden');
+    showMarketSearching(true);
 
     marketStatus.textContent = 'Buscando precios automáticamente (reintenta hasta obtener precio)…';
     refreshMarket(buildInstantMarket(item, { imageUrl }));
@@ -535,6 +546,7 @@ export async function renderItemDetail(root, params) {
       }
     }).then((result) => {
       if (gen !== marketLookupGen) return;
+      showMarketSearching(false);
       if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
       refreshMarket(result);
       paintProfit();
@@ -549,6 +561,7 @@ export async function renderItemDetail(root, params) {
       }
     }).catch((err) => {
       if (gen !== marketLookupGen) return;
+      showMarketSearching(false);
       if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
       if (err?.name === 'AbortError') {
         marketStatus.textContent = userCancelledMarket
@@ -564,6 +577,7 @@ export async function renderItemDetail(root, params) {
   marketCancelBtn?.addEventListener('click', () => {
     userCancelledMarket = true;
     try { marketAbort?.abort(); } catch { /* ignore */ }
+    showMarketSearching(false);
     if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
     if (marketStatus) marketStatus.textContent = 'Deteniendo…';
   });

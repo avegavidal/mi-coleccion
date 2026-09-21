@@ -555,6 +555,16 @@ test('CSS cropper overlay existe', () => {
   assert(/\.cropper-handle/.test(css));
 });
 
+test('CSS barra de búsqueda de mercado existe', () => {
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.market-search-progress/.test(css));
+  assert(/market-search-slide/.test(css));
+  assert(/is-market-searching/.test(css));
+  const idSrc = readFileSync(join(root, 'js/screens/identify.js'), 'utf8');
+  const colSrc = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/setMarketSearching/.test(idSrc) && /setMarketSearching/.test(colSrc));
+});
+
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
 

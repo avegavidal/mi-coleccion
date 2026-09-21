@@ -1232,6 +1232,61 @@ a.stat-card:active {
   margin: 0;
 }
 
+/* Indicador visual de búsqueda de mercado (barra indeterminada) */
+.market-search-progress {
+  position: relative;
+  height: 3px;
+  margin: 0 0 14px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  overflow: hidden;
+  opacity: 0;
+  transform: scaleY(0.4);
+  transform-origin: center;
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+  pointer-events: none;
+}
+
+.market-search-progress.is-active {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.market-search-progress::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent-2), transparent);
+  animation: market-search-slide 1.15s var(--ease) infinite;
+}
+
+.market-panel.is-market-searching {
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.market-panel.is-market-searching .market-body {
+  opacity: 0.72;
+  transition: opacity 0.3s var(--ease);
+}
+
+@keyframes market-search-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .market-search-progress::before {
+    width: 100%;
+    animation: market-search-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes market-search-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+}
+
 .market-profit {
   padding: 12px;
   margin-bottom: 12px;

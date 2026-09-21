@@ -218,6 +218,22 @@ export function setBusy(button, busy, label) {
   }
 }
 
+/**
+ * Barra de progreso indeterminada en el panel de precio de mercado.
+ * @param {HTMLElement|null} progressEl  .market-search-progress
+ * @param {boolean} searching
+ * @param {HTMLElement|null} [panelEl]   .market-panel (opcional, para pulso)
+ */
+export function setMarketSearching(progressEl, searching, panelEl = null) {
+  if (progressEl) {
+    progressEl.classList.toggle('is-active', Boolean(searching));
+    progressEl.setAttribute('aria-hidden', searching ? 'false' : 'true');
+    if (searching) progressEl.setAttribute('aria-busy', 'true');
+    else progressEl.removeAttribute('aria-busy');
+  }
+  if (panelEl) panelEl.classList.toggle('is-market-searching', Boolean(searching));
+}
+
 export function emptyState(title, subtitle = '', cta = null) {
   const box = el('div', { className: 'empty-state' }, [
     el('div', { className: 'empty-visual', html: '<span></span><span></span><span></span>' }),
