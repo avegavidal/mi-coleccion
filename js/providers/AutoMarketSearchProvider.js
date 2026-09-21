@@ -198,7 +198,12 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         if (q2.length) queries = q2;
       }
     } catch (err) {
-      if (err.name === 'AbortError') throw err;
+      if (err.name === 'AbortError') {
+        // Solo cortar el loop si el usuario/UI canceló esta búsqueda
+        if (signal?.aborted) throw err;
+        errors.push(`Gemini #${attempt}: red interrumpida`);
+        return;
+      }
       errors.push(`Gemini #${attempt}: ${err.message}`);
       onProgress({
         stage: 'gemini',
@@ -593,8 +598,12 @@ ${tcg
     parsed._imageAttached = imageAttached;
     if (parsed.length) return parsed;
   } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    lastErr = err.message;
+    if (err.name === 'AbortError') {
+      if (opts.signal?.aborted) throw err;
+      lastErr = 'Red interrumpida';
+    } else {
+      lastErr = err.message;
+    }
   }
 
   try {
@@ -608,7 +617,10 @@ ${tcg
     parsed._imageAttached = imageAttached;
     return parsed;
   } catch (err) {
-    if (err.name === 'AbortError') throw err;
+    if (err.name === 'AbortError') {
+      if (opts.signal?.aborted) throw err;
+      throw new Error(String(err.message || lastErr || 'Red interrumpida').slice(0, 280));
+    }
     throw new Error(String(err.message || lastErr || formatGeminiHttpError(0, '')).slice(0, 280));
   }
 }

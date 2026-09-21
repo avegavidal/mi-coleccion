@@ -402,6 +402,8 @@ export async function renderItemDetail(root, params) {
   const marketRefreshBtn = root.querySelector('#market-refresh');
   const marketCancelBtn = root.querySelector('#market-cancel');
   let marketAbort = null;
+  let marketLookupGen = 0;
+  let userCancelledMarket = false;
   const preferTypes = ['frontal', 'caja', 'etiqueta', 'codigo'];
   const sortedImgs = [...(item.item_images || [])].sort((a, b) => {
     const ia = preferTypes.indexOf(a.image_type);
@@ -517,6 +519,8 @@ export async function renderItemDetail(root, params) {
       try { marketAbort.abort(); } catch { /* ignore */ }
     }
     marketAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const gen = ++marketLookupGen;
+    userCancelledMarket = false;
     if (marketCancelBtn) marketCancelBtn.classList.remove('hidden');
 
     marketStatus.textContent = 'Buscando precios automáticamente (reintenta hasta obtener precio)…';
@@ -526,9 +530,11 @@ export async function renderItemDetail(root, params) {
       signal: marketAbort?.signal,
       maxAttempts: force ? 10 : 6,
       onProgress: (p) => {
+        if (gen !== marketLookupGen) return;
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
     }).then((result) => {
+      if (gen !== marketLookupGen) return;
       if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
       refreshMarket(result);
       paintProfit();
@@ -542,9 +548,13 @@ export async function renderItemDetail(root, params) {
         marketStatus.textContent = result.note || 'No se pudo completar la búsqueda automática';
       }
     }).catch((err) => {
+      if (gen !== marketLookupGen) return;
       if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
       if (err?.name === 'AbortError') {
-        marketStatus.textContent = 'Búsqueda detenida';
+        marketStatus.textContent = userCancelledMarket
+          ? 'Búsqueda detenida'
+          : 'Conexión interrumpida — pulsa “Buscar de nuevo”';
+        userCancelledMarket = false;
         return;
       }
       marketStatus.textContent = err.message || 'Error al buscar precio';
@@ -552,6 +562,7 @@ export async function renderItemDetail(root, params) {
   };
 
   marketCancelBtn?.addEventListener('click', () => {
+    userCancelledMarket = true;
     try { marketAbort?.abort(); } catch { /* ignore */ }
     if (marketCancelBtn) marketCancelBtn.classList.add('hidden');
     if (marketStatus) marketStatus.textContent = 'Deteniendo…';

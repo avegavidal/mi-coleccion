@@ -154,7 +154,13 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
       if (res.status === 404 || res.status === 400) continue;
       throw new Error(formatGeminiHttpError(res.status, lastErr));
     } catch (err) {
-      if (err.name === 'AbortError') throw err;
+      // Solo propagar AbortError si fue NUESTRO signal (Detener / nueva búsqueda).
+      // Timeouts de proxy, adblock, etc. también pueden venir como AbortError.
+      if (err.name === 'AbortError') {
+        if (opts.signal?.aborted) throw err;
+        lastErr = 'Red interrumpida al contactar Gemini';
+        continue;
+      }
       if (/Gemini \d|Modelo Gemini/i.test(err.message) && !/429|Cuota|free:/i.test(err.message)) throw err;
       lastErr = err.message;
     }

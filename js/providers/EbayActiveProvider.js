@@ -105,7 +105,13 @@ async function fetchHtmlViaProxy(targetUrl) {
       if (text.length > 5000) return text;
       throw new Error('Sin precios en la respuesta');
     } catch (err) {
-      lastErr = err;
+      clearTimeout(t);
+      // Abort del timeout local ≠ cancelación del usuario
+      if (err?.name === 'AbortError') {
+        lastErr = new Error('timeout proxy eBay');
+      } else {
+        lastErr = err;
+      }
     }
   }
   void bare;

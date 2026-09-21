@@ -436,11 +436,17 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
   };
 
   let autoRefineDone = false;
+  let lookupGen = 0;
+  let userCancelled = false;
+  let abortRetryUsed = false;
 
   const runMarketLookup = (force = false) => {
+    // Abortar búsqueda anterior sin marcarla como “Detener” del usuario
     abortIdentifyMarket();
+    userCancelled = false;
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     globalThis.__identifyMarketAbort = ac;
+    const gen = ++lookupGen;
     cancelBtn?.classList.remove('hidden');
     marketStatus.textContent = 'Buscando precios…';
     latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
@@ -453,9 +459,11 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       signal: ac?.signal,
       maxAttempts: force ? 10 : 8,
       onProgress: (p) => {
+        if (gen !== lookupGen) return;
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
     }).then((marketResult) => {
+      if (gen !== lookupGen) return;
       cancelBtn?.classList.add('hidden');
       const nameBefore = suggestion?.name || '';
       applyWebIdentity(marketResult);
@@ -479,9 +487,24 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
           : `Precio encontrado · ${suggestion?.name || 'foto'}`)
         : (marketResult.note || 'Sin precio automático');
     }).catch((err) => {
+      if (gen !== lookupGen) return; // reemplazada por otra búsqueda — ignorar
       cancelBtn?.classList.add('hidden');
       if (err?.name === 'AbortError') {
-        marketStatus.textContent = 'Búsqueda detenida';
+        if (userCancelled) {
+          marketStatus.textContent = 'Búsqueda detenida';
+          userCancelled = false;
+          return;
+        }
+        // Abort espurio (proxy/adblock): un solo reintento automático
+        if (!abortRetryUsed) {
+          abortRetryUsed = true;
+          marketStatus.textContent = 'Conexión interrumpida — reintentando…';
+          setTimeout(() => {
+            if (gen === lookupGen) runMarketLookup(true);
+          }, 800);
+          return;
+        }
+        marketStatus.textContent = 'No se pudo completar la búsqueda. Pulsa “Buscar de nuevo”.';
         return;
       }
       marketStatus.textContent = err.message || 'Error al buscar precio';
@@ -524,6 +547,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     paintDeal(globalThis.__identifyState?.marketResult || null);
   });
   cancelBtn?.addEventListener('click', () => {
+    userCancelled = true;
     abortIdentifyMarket();
     cancelBtn.classList.add('hidden');
     marketStatus.textContent = 'Deteniendo…';
