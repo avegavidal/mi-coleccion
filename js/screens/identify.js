@@ -68,7 +68,8 @@ export async function renderIdentify(root) {
     wireMarketTrack(shell, prev.previewUrl, {
       suggestion: prev.suggestion || null,
       marketResult: prev.marketResult || null,
-      autoStart: !prev.marketResult
+      // Solo saltar auto si ya hubo una búsqueda automática completa
+      autoStart: !(prev.marketResult?.auto && !prev.marketResult?.instant)
     });
   }
 
@@ -398,7 +399,10 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     paintIdentifyMarketBody(marketBody, marketResult, latestProbe);
     paintDeal(marketResult);
     if (globalThis.__identifyState) {
-      globalThis.__identifyState.marketResult = marketResult;
+      // No guardar el placeholder instantáneo como “resultado listo” (bloqueaba autoStart al remount)
+      if (marketResult?.auto && !marketResult?.instant) {
+        globalThis.__identifyState.marketResult = marketResult;
+      }
       globalThis.__identifyState.suggestion = suggestion;
     }
   };
@@ -510,6 +514,11 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     ]);
 
     nameAtSearchStart.value = suggestion?.name || '';
+    // Breve pausa tras ID Gemini para no encadenar 429 en la búsqueda de precio
+    if (suggestion?.source === 'gemini-web' || suggestion?.source === 'gemini') {
+      marketStatus.textContent = 'Identidad lista — preparando búsqueda de precio…';
+      await new Promise((r) => setTimeout(r, 2500));
+    }
     if (!suggestion?.name) {
       marketStatus.textContent = 'Busco precio por foto / datos parciales…';
     }

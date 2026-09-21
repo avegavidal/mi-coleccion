@@ -143,7 +143,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   const maxAttempts = opts.maxAttempts ?? (apiKey ? 6 : 2);
 
   const { resolveGeminiModels } = await import('../services/geminiClient.js');
-  let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: true }) : [];
+  let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: false }) : [];
   let modelCursor = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -157,7 +157,66 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       message: `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
     });
 
-    // 1) Gemini (rotar modelo cada intento)
+    // 1) eBay primero (no gasta cuota Gemini; suele bastar en figuras)
+    if (queries.length) {
+      onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
+      const provider = new EbayActiveProvider();
+      for (const q of queries.slice(0, 3)) {
+        if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
+        if (signal?.aborted) break;
+        try {
+          const live = await Promise.race([
+            provider.lookup({ query: q, limit: 8 }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
+          ]);
+          const fromListings = (live.listings || []).map((l, i) => {
+            const url = l.url || '';
+            const exact = isDirectListingUrl(url);
+            return {
+              id: `ebay-${attempt}-${q}-${i}-${l.price}`,
+              title: l.title || q,
+              price: Number(l.price),
+              currency: live.currency || 'USD',
+              source: 'ebay',
+              priceType: 'listing',
+              linkExact: exact,
+              url: url || live.searchUrl || ebayMarketUrls(q).active,
+              query: q,
+              note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
+            };
+          });
+          if (fromListings.length) {
+            matches = mergeMatches(matches, fromListings);
+            matches = scoreAndSortMatches(matches, item);
+          } else if (live.median != null) {
+            const synth = [];
+            for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
+              if (price == null) continue;
+              synth.push({
+                id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
+                title: `${label}: ${q}`,
+                price: Number(price),
+                currency: 'USD',
+                source: 'ebay',
+                priceType: 'estimate',
+                linkExact: false,
+                url: live.searchUrl,
+                query: q,
+                note: live.note || 'Resumen orientativo de precios eBay'
+              });
+            }
+            matches = mergeMatches(matches, synth);
+            matches = scoreAndSortMatches(matches, item);
+          }
+        } catch (err) {
+          errors.push(`eBay “${q}”: ${err.message}`);
+        }
+      }
+    }
+
+    if (shouldStopMarketSearch(matches, item, attempt)) break;
+
+    // 2) Gemini (después de eBay para no chocar con cuota de la identificación)
     if (apiKey) {
       const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.0-flash';
       modelCursor += 1;
@@ -186,78 +245,20 @@ export async function autoSearchMarketMatches(item, opts = {}) {
           attempt,
           message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con otras fuentes…`
         });
-        // Refrescar modelos si hubo cuota
         if (/429|cuota|free:|quota/i.test(err.message)) {
           try {
             modelList = await resolveGeminiModels(apiKey, { forceRefresh: true });
           } catch {
             // keep
           }
+          // Enfriar cuota antes del siguiente intento
+          onProgress({ stage: 'wait', attempt, message: 'Cuota IA agotada — espero unos segundos…' });
+          await delay(Math.min(12000, 3500 * attempt), signal);
         }
       }
     } else if (attempt === 1) {
       errors.push('Sin Gemini API key: ve a Configuración y guárdala para precios automáticos.');
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
-    }
-
-    if (shouldStopMarketSearch(matches, item, attempt)) break;
-
-    // 2) eBay
-    if (queries.length) {
-      onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
-      const provider = new EbayActiveProvider();
-      for (const q of queries.slice(0, 3)) {
-        if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
-        if (signal?.aborted) break;
-        try {
-          const live = await Promise.race([
-            provider.lookup({ query: q, limit: 8 }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
-          ]);
-          const fromListings = (live.listings || []).map((l, i) => {
-            const url = l.url || '';
-            const exact = isDirectListingUrl(url);
-            return {
-              id: `ebay-${attempt}-${q}-${i}-${l.price}`,
-              title: l.title || q,
-              price: Number(l.price),
-              currency: live.currency || 'USD',
-              source: 'ebay',
-              priceType: exact ? 'listing' : 'listing',
-              linkExact: exact,
-              url: url || live.searchUrl || ebayMarketUrls(q).active,
-              query: q,
-              note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
-            };
-          });
-          if (fromListings.length) {
-            matches = mergeMatches(matches, fromListings);
-            matches = scoreAndSortMatches(matches, item);
-          } else if (live.median != null) {
-            // Resumen estadístico: útil como pista, no como “éxito” definitivo
-            const synth = [];
-            for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
-              if (price == null) continue;
-              synth.push({
-                id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
-                title: `${label}: ${q}`,
-                price: Number(price),
-                currency: 'USD',
-                source: 'ebay',
-                priceType: 'estimate',
-                linkExact: false,
-                url: live.searchUrl,
-                query: q,
-                note: live.note || 'Resumen orientativo de precios eBay'
-              });
-            }
-            matches = mergeMatches(matches, synth);
-            matches = scoreAndSortMatches(matches, item);
-          }
-        } catch (err) {
-          errors.push(`eBay “${q}”: ${err.message}`);
-        }
-      }
     }
 
     if (shouldStopMarketSearch(matches, item, attempt)) break;

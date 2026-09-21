@@ -496,12 +496,18 @@ export async function renderItemDetail(root, params) {
   const runMarketSearch = (force = false) => {
     if (!force) {
       const cached = getCachedMarketView(item, { imageUrl });
-      if (cached) {
+      // Solo usar caché si hay coincidencias reales; mediana sola no basta (parece vacío)
+      if (cached && Array.isArray(cached.matches) && cached.matches.length > 0) {
         refreshMarket(cached);
         marketStatus.textContent = cached.fromCache
           ? 'Mostrando búsqueda guardada'
           : 'Mostrando precio guardado';
         return;
+      }
+      if (cached?.median != null) {
+        // Mostrar mediana DB mientras se busca lista de precios
+        refreshMarket(cached);
+        marketStatus.textContent = 'Precio guardado — buscando coincidencias…';
       }
     } else {
       clearMarketCache(item.id);
