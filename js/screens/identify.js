@@ -471,10 +471,18 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       imageUrl: previewUrl,
       imageBlob: fileBlob,
       signal: ac?.signal,
-      maxAttempts: force ? 10 : 8,
+      maxAttempts: force ? 6 : 5,
       onProgress: (p) => {
         if (gen !== lookupGen) return;
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
+      },
+      onMatches: (partial) => {
+        if (gen !== lookupGen) return;
+        paintMarket(partial);
+        const n = partial.matches?.length || 0;
+        if (n > 0 && marketStatus) {
+          marketStatus.textContent = `${n} tienda${n === 1 ? '' : 's'} · sigo buscando…`;
+        }
       }
     }).then((marketResult) => {
       if (gen !== lookupGen) return;
@@ -598,7 +606,7 @@ function paintIdentifyMarketBody(host, result, probe) {
   const matches = Array.isArray(result.matches) ? result.matches : [];
   const tcg = Boolean(result.tcg) || isTcgCardItem(probe);
 
-  if (result.auto && result.status === 'found' && matches.length) {
+  if (result.auto && matches.length && (result.status === 'found' || result.status === 'searching' || result.partial)) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;

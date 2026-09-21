@@ -143,10 +143,11 @@ export function identityWeak(item) {
 
 /**
  * @param {object} item
- * @param {{ imageUrl?: string|null, imageBlob?: Blob|File|null, onProgress?: (p:{stage:string,message:string,attempt?:number})=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
+ * @param {{ imageUrl?: string|null, imageBlob?: Blob|File|null, onProgress?: (p:{stage:string,message:string,attempt?:number,matchCount?:number})=>void, onMatches?: (partial:object)=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
  */
 export async function autoSearchMarketMatches(item, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
+  const onMatches = opts.onMatches || (() => {});
   const limit = opts.limit || 12;
   const signal = opts.signal;
   let queries = buildSearchQueries(item);
@@ -159,12 +160,104 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   let matches = [];
   const errors = [];
   const apiKey = readGeminiApiKey();
-  const maxAttempts = opts.maxAttempts ?? (apiKey ? (preferPhoto ? 8 : 6) : 2);
+  // Menos intentos: foto + texto en paralelo ya cubren más en el 1.º pase
+  const maxAttempts = opts.maxAttempts ?? (apiKey ? (preferPhoto ? 5 : 4) : 2);
 
   const { resolveGeminiModels } = await import('../services/geminiClient.js');
   let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: false }) : [];
   let modelCursor = 0;
   let photoGeminiOk = false;
+  let lastEmittedCount = -1;
+
+  function snapshotMatches(partial) {
+    let list = scoreAndSortMatches(matches, item);
+    list = flagPriceOutliers(list);
+    list = filterDisplayMatches(list, item).slice(0, limit);
+    const tcg = isTcgCardItem(item);
+    if (tcg) {
+      list = [...list].sort((a, b) => {
+        const aM = isTcgMarketPriceMatch(a) ? 1 : 0;
+        const bM = isTcgMarketPriceMatch(b) ? 1 : 0;
+        if (bM !== aM) return bM - aM;
+        return (b.score || 0) - (a.score || 0);
+      });
+    }
+    const useful = hasUsefulMarketMatches(list);
+    const primaryQuery = queries[0] || '';
+    const shopIds = tcg
+      ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
+      : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
+    const ref = tcg ? pickTcgReferenceMatch(list) : null;
+    const refPrice = ref?.price != null ? Number(ref.price) : null;
+    const medianPool = list.filter((m) =>
+      m.priceType !== 'estimate' && m.source !== 'web-snippet'
+    );
+    const medianPrices = (medianPool.length ? medianPool : list).map((m) => m.price);
+    const median = refPrice != null && Number.isFinite(refPrice)
+      ? refPrice
+      : (medianPrices.length ? pickMedian(medianPrices) : null);
+    const reliable = hasReliableMarketMatches(list, item);
+    const status = useful ? 'found' : (partial ? 'searching' : (errors.length ? 'error' : 'empty'));
+    return {
+      status,
+      partial: Boolean(partial),
+      matches: useful ? list : (partial && list.length ? list : []),
+      queries,
+      query: primaryQuery,
+      imageUrl,
+      errors: errors.slice(-12),
+      tcg,
+      reference: tcg ? 'tcgplayer-market' : 'median',
+      referenceMatchId: ref?.id || null,
+      reliable,
+      sampleSize: useful || (partial && list.length) ? list.length : 0,
+      low: list.length ? Math.min(...list.map((m) => m.price)) : null,
+      median: list.length ? median : null,
+      high: list.length ? Math.max(...list.map((m) => m.price)) : null,
+      currency: 'USD',
+      links: [
+        ...buildVisualMarketLinks(imageUrl),
+        ...(primaryQuery
+          ? buildShopLinksForQuery(primaryQuery, { tcg }).filter((l) => shopIds.includes(l.id))
+          : [])
+      ],
+      note: useful
+        ? (partial
+          ? `Encontré ${list.length}… sigo buscando más tiendas`
+          : (tcg
+            ? (ref
+              ? `Referencia: TCGPlayer Market Price $${Number(ref.price).toFixed(2)}. Elige la ideal si hay varias.`
+              : `Encontré ${list.length} coincidencia${list.length === 1 ? '' : 's'}. Prefiere la de Market Price.`)
+            : (reliable
+              ? `Encontré ${list.length} coincidencia${list.length === 1 ? '' : 's'}. Elige la ideal.`
+              : `Encontré ${list.length} pista${list.length === 1 ? '' : 's'} (algunas orientativas). Revisa o pulsa “Buscar de nuevo”.`)))
+        : !apiKey
+          ? 'Para precios automáticos: Configuración → pega tu Gemini API key. Sin ella los marketplaces bloquean la lectura automática.'
+          : partial
+            ? 'Buscando en tiendas…'
+            : status === 'empty'
+              ? 'Tras varios intentos no encontré precios útiles. Revisa los datos o abre un buscador manual.'
+              : `Tras reintentos no pude leer el mercado (${errors[errors.length - 1] || 'error'}). Puedes pulsar “Buscar de nuevo”.`
+    };
+  }
+
+  function emitPartial(sourceLabel) {
+    const snap = snapshotMatches(true);
+    const count = snap.matches?.length || 0;
+    if (count !== lastEmittedCount) {
+      lastEmittedCount = count;
+      onMatches(snap);
+      if (count > 0) {
+        onProgress({
+          stage: 'partial',
+          message: sourceLabel
+            ? `${count} precio${count === 1 ? '' : 's'} · ${sourceLabel}`
+            : `${count} precio${count === 1 ? '' : 's'} encontrados…`,
+          matchCount: count
+        });
+      }
+    }
+  }
 
   async function runGeminiPass(attempt) {
     if (!apiKey) return;
@@ -173,9 +266,9 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     onProgress({
       stage: 'gemini',
       attempt,
-      message: preferPhoto
-        ? `IA con foto (${preferModel}) — identifico y busco precio…`
-        : `IA (${preferModel}) + foto/datos — intento ${attempt}…`
+      message: hasPhoto
+        ? `Foto + IA (${preferModel}) en paralelo…`
+        : `IA (${preferModel}) + texto — intento ${attempt}…`
     });
     try {
       const geminiMatches = await searchMarketWithGemini(item, {
@@ -187,19 +280,19 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         preferModel,
         models: modelList,
         signal,
-        photoFirst: preferPhoto
+        photoFirst: preferPhoto || hasPhoto
       });
       if (geminiMatches._imageAttached) photoGeminiOk = true;
       matches = mergeMatches(matches, geminiMatches);
       matches = scoreAndSortMatches(matches, item);
-      if (preferPhoto && geminiMatches[0]?.title) {
+      if ((preferPhoto || weakId) && geminiMatches[0]?.title) {
         const enriched = { ...item, name: item?.name || geminiMatches[0].title };
         const q2 = buildSearchQueries(enriched);
         if (q2.length) queries = q2;
       }
+      emitPartial('foto / IA');
     } catch (err) {
       if (err.name === 'AbortError') {
-        // Solo cortar el loop si el usuario/UI canceló esta búsqueda
         if (signal?.aborted) throw err;
         errors.push(`Gemini #${attempt}: red interrumpida`);
         return;
@@ -208,7 +301,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       onProgress({
         stage: 'gemini',
         attempt,
-        message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con otras fuentes…`
+        message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con texto…`
       });
       if (/429|cuota|free:|quota/i.test(err.message)) {
         try {
@@ -217,22 +310,23 @@ export async function autoSearchMarketMatches(item, opts = {}) {
           // keep
         }
         onProgress({ stage: 'wait', attempt, message: 'Cuota IA agotada — espero unos segundos…' });
-        await delay(Math.min(12000, 3500 * attempt), signal);
+        await delay(Math.min(8000, 2500 * attempt), signal);
       }
     }
   }
 
   async function runEbayPass(attempt) {
     if (!queries.length) return;
-    onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
+    onProgress({ stage: 'ebay', attempt, message: `Texto / eBay (intento ${attempt})…` });
     const provider = new EbayActiveProvider();
-    for (const q of queries.slice(0, 3)) {
+    const qLimit = attempt === 1 ? 2 : 3;
+    for (const q of queries.slice(0, qLimit)) {
       if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
       if (signal?.aborted) break;
       try {
         const live = await Promise.race([
           provider.lookup({ query: q, limit: 8 }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 10000))
         ]);
         const fromListings = (live.listings || []).map((l, i) => {
           const url = l.url || '';
@@ -253,6 +347,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         if (fromListings.length) {
           matches = mergeMatches(matches, fromListings);
           matches = scoreAndSortMatches(matches, item);
+          emitPartial('eBay');
         } else if (live.median != null) {
           const synth = [];
           for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
@@ -272,6 +367,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
           }
           matches = mergeMatches(matches, synth);
           matches = scoreAndSortMatches(matches, item);
+          emitPartial('eBay');
         }
       } catch (err) {
         errors.push(`eBay “${q}”: ${err.message}`);
@@ -287,9 +383,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     onProgress({
       stage: 'attempt',
       attempt,
-      message: preferPhoto
-        ? `Intento ${attempt}/${maxAttempts}: precio por foto…`
-        : `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
+      message: hasPhoto && queries.length
+        ? `Intento ${attempt}/${maxAttempts}: foto + texto en paralelo…`
+        : preferPhoto
+          ? `Intento ${attempt}/${maxAttempts}: precio por foto…`
+          : `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
     });
 
     if (!apiKey && attempt === 1) {
@@ -297,19 +395,25 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
     }
 
-    if (preferPhoto) {
-      await runGeminiPass(attempt);
-      if (shouldStopMarketSearch(matches, item, attempt)) break;
-      await runEbayPass(attempt);
-    } else {
-      await runEbayPass(attempt);
-      if (shouldStopMarketSearch(matches, item, attempt) && !(hasPhoto && weakId && !photoGeminiOk)) {
-        break;
+    // Foto (Gemini) y texto (eBay) a la vez — quien llegue primero se muestra
+    const tasks = [];
+    if (apiKey) tasks.push(runGeminiPass(attempt));
+    if (queries.length) tasks.push(runEbayPass(attempt));
+    if (tasks.length) {
+      const results = await Promise.allSettled(tasks);
+      for (const r of results) {
+        if (r.status === 'rejected' && r.reason?.name === 'AbortError' && signal?.aborted) {
+          throw r.reason;
+        }
       }
-      await runGeminiPass(attempt);
     }
 
-    if (shouldStopMarketSearch(matches, item, attempt)) break;
+    if (shouldStopMarketSearch(matches, item, attempt)) {
+      // Con foto débil y Gemini aún sin aportar, dar 1–2 pases más
+      if (!(hasPhoto && weakId && !photoGeminiOk && attempt < Math.min(3, maxAttempts))) {
+        break;
+      }
+    }
 
     if (queries[0] && attempt >= 2 && !shouldStopMarketSearch(matches, item, attempt)) {
       onProgress({ stage: 'web', attempt, message: `Índice web (último recurso, intento ${attempt})…` });
@@ -317,6 +421,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         const webMatches = await searchPricesViaWebIndex(queries[0], limit, { tcg: isTcgCardItem(item) });
         matches = mergeMatches(matches, webMatches);
         matches = scoreAndSortMatches(matches, item);
+        emitPartial('web');
       } catch (err) {
         errors.push(`Web: ${err.message}`);
       }
@@ -327,89 +432,20 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
     const hasSome = hasUsefulMarketMatches(matches);
     const waitMs = hasSome
-      ? Math.min(6000, 1200 * attempt)
-      : Math.min(16000, Math.round(1800 * (1.35 ** Math.min(attempt - 1, 5))));
+      ? Math.min(2500, 700 * attempt)
+      : Math.min(10000, Math.round(1200 * (1.3 ** Math.min(attempt - 1, 5))));
     onProgress({
       stage: 'wait',
       attempt,
       message: hasSome
         ? `Mejorando resultados (${attempt + 1}/${maxAttempts})…`
-        : `Aún sin precio. Reintento ${attempt + 1}/${maxAttempts} en ${Math.round(waitMs / 1000)}s…`
+        : `Aún sin precio. Reintento ${attempt + 1}/${maxAttempts}…`,
+      matchCount: matches.length
     });
     await delay(waitMs, signal);
   }
 
-  matches = scoreAndSortMatches(matches, item);
-  matches = flagPriceOutliers(matches);
-  matches = filterDisplayMatches(matches, item).slice(0, limit);
-
-  const tcg = isTcgCardItem(item);
-  if (tcg) {
-    matches = [...matches].sort((a, b) => {
-      const aM = isTcgMarketPriceMatch(a) ? 1 : 0;
-      const bM = isTcgMarketPriceMatch(b) ? 1 : 0;
-      if (bM !== aM) return bM - aM;
-      return (b.score || 0) - (a.score || 0);
-    });
-  }
-
-  const useful = hasUsefulMarketMatches(matches);
-  const status = useful
-    ? 'found'
-    : (errors.length ? 'error' : 'empty');
-
-  const primaryQuery = queries[0] || '';
-  const shopIds = tcg
-    ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
-    : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
-
-  const ref = tcg ? pickTcgReferenceMatch(matches) : null;
-  const refPrice = ref?.price != null ? Number(ref.price) : null;
-  const medianPool = matches.filter((m) =>
-    m.priceType !== 'estimate' && m.source !== 'web-snippet'
-  );
-  const medianPrices = (medianPool.length ? medianPool : matches).map((m) => m.price);
-  const median = refPrice != null && Number.isFinite(refPrice)
-    ? refPrice
-    : (medianPrices.length ? pickMedian(medianPrices) : null);
-
-  const reliable = hasReliableMarketMatches(matches, item);
-  return {
-    status,
-    matches: useful ? matches : [],
-    queries,
-    query: primaryQuery,
-    imageUrl,
-    errors: errors.slice(-12),
-    tcg,
-    reference: tcg ? 'tcgplayer-market' : 'median',
-    referenceMatchId: ref?.id || null,
-    reliable,
-    sampleSize: useful ? matches.length : 0,
-    low: useful ? Math.min(...matches.map((m) => m.price)) : null,
-    median: useful ? median : null,
-    high: useful ? Math.max(...matches.map((m) => m.price)) : null,
-    currency: 'USD',
-    links: [
-      ...buildVisualMarketLinks(imageUrl),
-      ...(primaryQuery
-        ? buildShopLinksForQuery(primaryQuery, { tcg }).filter((l) => shopIds.includes(l.id))
-        : [])
-    ],
-    note: status === 'found'
-      ? (tcg
-        ? (ref
-          ? `Referencia: TCGPlayer Market Price $${Number(ref.price).toFixed(2)}. Elige la ideal si hay varias.`
-          : `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Prefiere la de Market Price.`)
-        : (reliable
-          ? `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'}. Elige la ideal.`
-          : `Encontré ${matches.length} pista${matches.length === 1 ? '' : 's'} (algunas orientativas). Revisa o pulsa “Buscar de nuevo”.`))
-      : !apiKey
-        ? 'Para precios automáticos: Configuración → pega tu Gemini API key. Sin ella los marketplaces bloquean la lectura automática.'
-      : status === 'empty'
-        ? 'Tras varios intentos no encontré precios útiles. Revisa los datos o abre un buscador manual.'
-        : `Tras reintentos no pude leer el mercado (${errors[errors.length - 1] || 'error'}). Puedes pulsar “Buscar de nuevo”.`
-  };
+  return snapshotMatches(false);
 }
 
 function buildSearchQueries(item) {

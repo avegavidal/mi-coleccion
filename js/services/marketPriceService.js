@@ -454,7 +454,7 @@ export function buildInstantMarket(item, opts = {}) {
 /**
  * Búsqueda AUTOMÁTICA de precios (Gemini web + eBay). Devuelve matches seleccionables.
  * @param {object} item
- * @param {{ query?: string, persist?: boolean, scrape?: boolean, imageUrl?: string|null, onProgress?: Function }} [options]
+ * @param {{ query?: string, persist?: boolean, scrape?: boolean, imageUrl?: string|null, imageBlob?: Blob|File|null, onProgress?: Function, onMatches?: Function, signal?: AbortSignal, maxAttempts?: number }} [options]
  */
 export async function lookupMarketPrice(item, options = {}) {
   const baseItem = options.query
@@ -462,40 +462,61 @@ export async function lookupMarketPrice(item, options = {}) {
     : item;
 
   const imageUrl = options.imageUrl || null;
+
+  function toUiResult(auto, { partial = false } = {}) {
+    const hasMatches = Array.isArray(auto.matches) && auto.matches.length > 0;
+    const displayStatus = auto.status === 'found' || (partial && hasMatches)
+      ? 'found'
+      : auto.status === 'searching'
+        ? (hasMatches ? 'found' : 'searching')
+        : auto.status;
+    return {
+      ...buildInstantMarket(baseItem, { imageUrl }),
+      source: (auto.matches || []).some((m) => m.source === 'ebay') ? 'auto-ebay' : 'auto-search',
+      label: displayStatus === 'found'
+        ? (partial ? 'Coincidencias (buscando más…)' : 'Coincidencias de mercado')
+        : 'Sin coincidencias automáticas',
+      status: displayStatus,
+      matches: auto.matches || [],
+      listings: (auto.matches || []).map((m) => ({
+        title: m.title,
+        price: m.price,
+        currency: m.currency,
+        url: m.url || ''
+      })),
+      sampleSize: auto.sampleSize,
+      low: auto.low,
+      median: auto.median,
+      high: auto.high,
+      currency: auto.currency || 'USD',
+      note: auto.note,
+      errors: auto.errors,
+      reliable: Boolean(auto.reliable),
+      tcg: Boolean(auto.tcg),
+      referenceMatchId: auto.referenceMatchId || null,
+      deal: classifyDeal(item?.purchase_price, auto.median),
+      checkedAt: new Date().toISOString(),
+      instant: false,
+      auto: true,
+      partial: Boolean(partial || auto.partial)
+    };
+  }
+
   const auto = await autoSearchMarketMatches(baseItem, {
     imageUrl,
     imageBlob: options.imageBlob || null,
     onProgress: options.onProgress,
+    onMatches: (partialAuto) => {
+      if (typeof options.onMatches === 'function') {
+        options.onMatches(toUiResult(partialAuto, { partial: true }));
+      }
+    },
     signal: options.signal,
     maxAttempts: options.maxAttempts,
     limit: 12
   });
 
-  const result = {
-    ...buildInstantMarket(baseItem, { imageUrl }),
-    source: auto.matches.some((m) => m.source === 'ebay') ? 'auto-ebay' : 'auto-search',
-    label: auto.status === 'found' ? 'Coincidencias de mercado' : 'Sin coincidencias automáticas',
-    status: auto.status,
-    matches: auto.matches,
-    listings: auto.matches.map((m) => ({
-      title: m.title,
-      price: m.price,
-      currency: m.currency,
-      url: m.url || ''
-    })),
-    sampleSize: auto.sampleSize,
-    low: auto.low,
-    median: auto.median,
-    high: auto.high,
-    currency: auto.currency || 'USD',
-    note: auto.note,
-    errors: auto.errors,
-    reliable: Boolean(auto.reliable),
-    deal: classifyDeal(item?.purchase_price, auto.median),
-    checkedAt: new Date().toISOString(),
-    instant: false,
-    auto: true
-  };
+  const result = toUiResult(auto, { partial: false });
 
   // Fallback scrape explícito (legacy)
   if (options.scrape && (!auto.matches || !auto.matches.length)) {

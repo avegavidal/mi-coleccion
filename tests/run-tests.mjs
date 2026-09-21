@@ -741,9 +741,22 @@ test('lookupMarketPrice exporta auto search', async () => {
   const src = readFileSync(join(root, 'js/services/marketPriceService.js'), 'utf8');
   assert(/autoSearchMarketMatches/.test(src));
   assert(/ensureMarketPrice/.test(src));
+  assert(/onMatches/.test(src));
   // no debe haber dos ensureMarketPrice
   const count = (src.match(/export async function ensureMarketPrice/g) || []).length;
   assert(count === 1, `ensureMarketPrice count=${count}`);
+});
+
+test('búsqueda paralela foto+texto y progreso parcial', () => {
+  const src = readFileSync(join(root, 'js/providers/AutoMarketSearchProvider.js'), 'utf8');
+  assert(/Promise\.allSettled/.test(src));
+  assert(/onMatches/.test(src));
+  assert(/emitPartial/.test(src));
+  assert(/foto \+ texto en paralelo/.test(src));
+  const idSrc = readFileSync(join(root, 'js/screens/identify.js'), 'utf8');
+  assert(/onMatches:\s*\(partial\)/.test(idSrc));
+  const colSrc = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/onMatches:\s*\(partial\)/.test(colSrc));
 });
 
 test('collection usa lookupMarketPrice automático', () => {

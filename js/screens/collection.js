@@ -534,15 +534,23 @@ export async function renderItemDetail(root, params) {
     if (marketCancelBtn) marketCancelBtn.classList.remove('hidden');
     showMarketSearching(true);
 
-    marketStatus.textContent = 'Buscando precios automáticamente (reintenta hasta obtener precio)…';
+    marketStatus.textContent = 'Buscando precios (foto + texto en paralelo)…';
     refreshMarket(buildInstantMarket(item, { imageUrl }));
     lookupMarketPrice(item, {
       imageUrl,
       signal: marketAbort?.signal,
-      maxAttempts: force ? 10 : 6,
+      maxAttempts: force ? 6 : 4,
       onProgress: (p) => {
         if (gen !== marketLookupGen) return;
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
+      },
+      onMatches: (partial) => {
+        if (gen !== marketLookupGen) return;
+        refreshMarket(partial);
+        const n = partial.matches?.length || 0;
+        if (n > 0 && marketStatus) {
+          marketStatus.textContent = `${n} tienda${n === 1 ? '' : 's'} · sigo buscando…`;
+        }
       }
     }).then((result) => {
       if (gen !== marketLookupGen) return;
@@ -792,7 +800,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
     text: tcg ? 'Coincidencias (referencia: TCGPlayer Market Price)' : 'Coincidencias encontradas'
   }));
 
-  if (result.auto && result.status === 'found' && matches.length) {
+  if (result.auto && matches.length && (result.status === 'found' || result.status === 'searching' || result.partial)) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
