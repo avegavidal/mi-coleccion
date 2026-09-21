@@ -1,4 +1,4 @@
-import { el, emptyState, formatDate, formatMoney } from '../utils/dom.js';
+import { el, emptyState, formatDate, formatMoneyDual } from '../utils/dom.js';
 import { getDashboardStats, listItems } from '../services/collectionService.js';
 import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { classifyDeal } from '../services/marketPriceService.js';
@@ -96,7 +96,7 @@ export function itemCard(item) {
         className: `card-market${item.market_price_median == null ? ' hidden' : ''}`,
         dataset: { marketFor: item.id },
         text: item.market_price_median != null
-          ? formatMoney(item.market_price_median, item.market_currency || 'USD')
+          ? formatMoneyDual(item.market_price_median, item.market_currency || 'USD')
           : ''
       }),
       el('p', {

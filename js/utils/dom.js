@@ -52,6 +52,71 @@ export function formatMoney(amount, currency = 'USD') {
   }
 }
 
+const FX_LS_KEY = 'mi_coleccion_usd_jpy';
+/** Fallback si no hay red (se actualiza con frankfurter). */
+let usdJpyRate = 149;
+
+export function getUsdJpyRate() {
+  return usdJpyRate;
+}
+
+export function loadCachedUsdJpyRate() {
+  try {
+    const raw = globalThis.localStorage?.getItem(FX_LS_KEY);
+    if (!raw) return usdJpyRate;
+    const data = JSON.parse(raw);
+    const rate = Number(data.rate);
+    if (rate > 50 && rate < 400) usdJpyRate = rate;
+  } catch {
+    // ignore
+  }
+  return usdJpyRate;
+}
+
+export async function refreshUsdJpyRate() {
+  loadCachedUsdJpyRate();
+  try {
+    const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=JPY');
+    if (!res.ok) return usdJpyRate;
+    const data = await res.json();
+    const rate = Number(data?.rates?.JPY);
+    if (rate > 50 && rate < 400) {
+      usdJpyRate = rate;
+      try {
+        globalThis.localStorage?.setItem(FX_LS_KEY, JSON.stringify({ rate, at: Date.now() }));
+      } catch { /* ignore */ }
+    }
+  } catch {
+    // se queda el cache o el fallback
+  }
+  return usdJpyRate;
+}
+
+/**
+ * Precio en USD y JPY para comparar ambos mercados.
+ * @param {number|string} amount
+ * @param {string} [currency]
+ */
+export function formatMoneyDual(amount, currency = 'USD') {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '—';
+  const cur = String(currency || 'USD').toUpperCase();
+  const rate = getUsdJpyRate();
+  let usd;
+  let jpy;
+  if (cur === 'JPY' || cur === 'YEN') {
+    jpy = n;
+    usd = n / rate;
+  } else if (cur === 'USD') {
+    usd = n;
+    jpy = n * rate;
+  } else {
+    return formatMoney(n, cur);
+  }
+  const yen = Math.round(jpy);
+  return `${formatMoney(usd, 'USD')} · ${formatMoney(yen, 'JPY')}`;
+}
+
 export function formatDate(iso) {
   if (!iso) return '—';
   try {

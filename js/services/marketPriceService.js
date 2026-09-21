@@ -7,6 +7,7 @@ import {
   ebayMarketUrls,
   isTcgCardItem
 } from '../providers/EbayLinkProvider.js';
+import { formatMoneyDual } from '../utils/dom.js';
 
 const cfg = () => globalThis.APP_CONFIG || globalThis.window?.APP_CONFIG || {};
 
@@ -187,8 +188,8 @@ export function classifyDeal(purchasePrice, marketMedian) {
     const tier = ratio <= 0.75 ? 'steal' : ratio <= 0.92 ? 'good' : 'fair';
     return {
       code: tier,
-      label: profit >= 1 ? `Ganancia ~$${profit.toFixed(2)}` : 'Ganancia pequeña',
-      detail: `Pagaste $${buy.toFixed(2)} y el mercado está ~$${med.toFixed(2)}. Si vendes cerca de la mediana, ganarías ~$${profit.toFixed(2)} (${pct}% a tu favor).`,
+      label: profit >= 1 ? `Ganancia ~${formatMoneyDual(profit, 'USD')}` : 'Ganancia pequeña',
+      detail: `Pagaste ${formatMoneyDual(buy, 'USD')} y el mercado está ~${formatMoneyDual(med, 'USD')}. Si vendes cerca de la mediana, ganarías ~${formatMoneyDual(profit, 'USD')} (${pct}% a tu favor).`,
       ratio,
       profit
     };
@@ -198,8 +199,8 @@ export function classifyDeal(purchasePrice, marketMedian) {
     const tier = ratio <= 1.25 ? 'high' : 'expensive';
     return {
       code: tier,
-      label: `Pérdida ~$${loss.toFixed(2)}`,
-      detail: `Pagaste $${buy.toFixed(2)} y el mercado está ~$${med.toFixed(2)}. Hoy estarías ~$${loss.toFixed(2)} por debajo (${pct}% arriba del mercado).`,
+      label: `Pérdida ~${formatMoneyDual(loss, 'USD')}`,
+      detail: `Pagaste ${formatMoneyDual(buy, 'USD')} y el mercado está ~${formatMoneyDual(med, 'USD')}. Hoy estarías ~${formatMoneyDual(loss, 'USD')} por debajo (${pct}% arriba del mercado).`,
       ratio,
       profit
     };
@@ -207,7 +208,7 @@ export function classifyDeal(purchasePrice, marketMedian) {
   return {
     code: 'fair',
     label: 'Sin ganancia ni pérdida clara',
-    detail: `Pagaste $${buy.toFixed(2)} y el mercado (~$${med.toFixed(2)}) está casi igual.`,
+    detail: `Pagaste ${formatMoneyDual(buy, 'USD')} y el mercado (~${formatMoneyDual(med, 'USD')}) está casi igual.`,
     ratio,
     profit: 0
   };

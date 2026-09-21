@@ -16,7 +16,7 @@ window.APP_CONFIG = {
   STORAGE_BUCKET: 'item-photos',
 
   APP_NAME: 'Mi Colección',
-  APP_VERSION: '1.4.1',
+  APP_VERSION: '1.4.2',
 
   // Mercados: US / JP (+ VIS para Lens si hay foto)
   MARKET_REGIONS: 'US,JP,VIS',

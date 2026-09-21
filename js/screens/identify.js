@@ -1,4 +1,4 @@
-import { el, toast, imageTypeLabel, setBusy, formatMoney } from '../utils/dom.js';
+import { el, toast, imageTypeLabel, setBusy, formatMoneyDual } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { navigate } from '../utils/router.js';
 import {
@@ -380,7 +380,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       marketDeal.className = 'market-deal muted';
       marketDeal.classList.remove('hidden');
       marketDeal.textContent = median != null
-        ? `Referencia ~${formatMoney(median, marketResult.currency || 'USD')}. Escribe el precio pedido para ver si es buen trato.`
+        ? `Referencia ~${formatMoneyDual(median, marketResult.currency || 'USD')}. Escribe el precio pedido para ver si es buen trato.`
         : 'Cuando haya precio de mercado, escribe lo que te piden para comparar.';
       return;
     }
@@ -536,7 +536,7 @@ function paintIdentifyMarketBody(host, result, probe) {
         className: `market-match-card${isMarketRef ? ' is-market-ref' : ''}`
       }, [
         el('div', { className: 'market-match-main' }, [
-          el('strong', { className: 'market-match-price', text: formatMoney(match.price, match.currency || currency) }),
+          el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
           isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
@@ -568,7 +568,7 @@ function paintIdentifyMarketBody(host, result, probe) {
     host.append(el('div', { className: 'market-stats' }, [
       el('div', { className: 'market-stat main' }, [
         el('span', { className: 'market-stat-label', text: tcg ? 'Market Price' : 'Referencia' }),
-        el('strong', { text: formatMoney(result.median, currency) })
+        el('strong', { text: formatMoneyDual(result.median, currency) })
       ])
     ]));
   }

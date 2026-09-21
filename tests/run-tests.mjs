@@ -480,6 +480,15 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
   assert(fromMarket.source === 'market-web');
 });
 
+await testAsync('formatMoneyDual muestra USD y JPY', async () => {
+  const dom = await import(pathToFileURL(join(root, 'js/utils/dom.js')).href);
+  const text = dom.formatMoneyDual(100, 'USD');
+  assert(/US\$|USD|\$/.test(text), text);
+  assert(/JP¥|JPY|¥/.test(text), text);
+  const yen = dom.formatMoneyDual(14900, 'JPY');
+  assert(/¥|JPY/.test(yen) && /\$|USD/.test(yen), yen);
+});
+
 test('CSS cropper overlay existe', () => {
   const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
   assert(/\.cropper-overlay/.test(css));

@@ -1,5 +1,6 @@
 import { defineRoute, startRouter, setAuthUser, navigate, getAuthUser } from './utils/router.js';
 import { onAuthStateChange, getSession, signOut } from './services/authService.js';
+import { refreshUsdJpyRate } from './utils/dom.js';
 import { renderLogin, renderRecover } from './screens/auth.js';
 import { renderDashboard } from './screens/dashboard.js';
 import {
@@ -99,9 +100,11 @@ async function boot() {
     onNavigate: updateChrome
   });
 
+  refreshUsdJpyRate().catch(() => {});
+
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('./service-worker.js?v=21');
+      const reg = await navigator.serviceWorker.register('./service-worker.js?v=22');
       await reg.update();
     } catch (err) {
       console.warn('SW no registrado', err);

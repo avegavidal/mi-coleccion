@@ -1,4 +1,4 @@
-import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatDate } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, imageTypeLabel, formatMoney, formatMoneyDual, formatDate } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { itemCard } from './dashboard.js';
 import {
@@ -770,7 +770,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
         className: `market-match-card${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}`
       }, [
         el('div', { className: 'market-match-main' }, [
-          el('strong', { className: 'market-match-price', text: formatMoney(match.price, match.currency || currency) }),
+          el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
           isMarketRef
             ? el('span', { className: 'market-ref-badge', text: 'Market Price' })
             : null,
@@ -831,7 +831,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
       result.median != null
         ? el('div', { className: 'market-stat main' }, [
           el('span', { className: 'market-stat-label', text: tcgRef ? 'Market Price' : 'Tu estimado' }),
-          el('strong', { text: formatMoney(result.median, currency) })
+          el('strong', { text: formatMoneyDual(result.median, currency) })
         ])
         : el('div', { className: 'market-stat main' }, [
           el('span', { className: 'market-stat-label', text: tcgRef ? 'Market Price' : 'Tu estimado' }),
@@ -840,7 +840,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
       item?.purchase_price != null
         ? el('div', { className: 'market-stat' }, [
           el('span', { className: 'market-stat-label', text: 'Pagaste' }),
-          el('strong', { text: formatMoney(item.purchase_price, item.currency || currency) })
+          el('strong', { text: formatMoneyDual(item.purchase_price, item.currency || currency) })
         ])
         : null
     ]));
@@ -1017,7 +1017,7 @@ function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
     host.append(el('p', {
       className: 'muted small',
       text: item.market_price_median != null
-        ? `Estimado actual: ${formatMoney(item.market_price_median, item.market_currency || 'USD')}. Puedes añadir más opciones y cambiar la ideal.`
+        ? `Estimado actual: ${formatMoneyDual(item.market_price_median, item.market_currency || 'USD')}. Puedes añadir más opciones y cambiar la ideal.`
         : 'Todavía no hay candidatos. Abre Lens/eBay, anota 2–3 precios parecidos y elige.'
     }));
     return;
@@ -1032,7 +1032,7 @@ function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
       className: `market-candidate-card${isChosen ? ' is-chosen' : ''}`
     }, [
       el('div', { className: 'market-candidate-main' }, [
-        el('strong', { className: 'market-candidate-price', text: formatMoney(cand.price, 'USD') }),
+        el('strong', { className: 'market-candidate-price', text: formatMoneyDual(cand.price, 'USD') }),
         el('p', { className: 'market-candidate-label', text: cand.label }),
         isChosen ? el('span', { className: 'market-candidate-badge', text: 'Ideal (guardada)' }) : null
       ]),
@@ -1094,7 +1094,7 @@ function paintMarketCandidates(host, item, imageUrl, refreshMarket) {
     const mid = prices[Math.floor(prices.length / 2)];
     host.append(el('p', {
       className: 'muted small',
-      text: `${candidates.length} opciones · de ${formatMoney(prices[0], 'USD')} a ${formatMoney(prices[prices.length - 1], 'USD')} · mediana ~${formatMoney(mid, 'USD')}. Elige la que sí sea tu figura.`
+      text: `${candidates.length} opciones · de ${formatMoneyDual(prices[0], 'USD')} a ${formatMoneyDual(prices[prices.length - 1], 'USD')} · mediana ~${formatMoneyDual(mid, 'USD')}. Elige la que sí sea tu figura.`
     }));
   }
 }
