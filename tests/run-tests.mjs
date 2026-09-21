@@ -443,6 +443,25 @@ test('identify/collection usan prepareImageForAnalysis', () => {
   assert(!/compressImage\(file\)/.test(idSrc), 'identify no debe comprimir sin recorte');
   assert(/clear-photo|Quitar foto/.test(colSrc), 'add form debe poder quitar la foto');
   assert(/URL\.revokeObjectURL/.test(colSrc));
+  assert(/lookupMarketPrice/.test(idSrc), 'identify debe buscar precio de mercado');
+  assert(/identify-market|Precio de mercado/.test(idSrc));
+  assert(/buildMarketProbeFromSuggestion|buildIdentifyProbeItem/.test(idSrc));
+});
+
+await testAsync('buildMarketProbeFromSuggestion prioriza suggestion sobre match', async () => {
+  const mkt = await import(pathToFileURL(join(root, 'js/services/marketPriceService.js')).href);
+  const probe = mkt.buildMarketProbeFromSuggestion(
+    { name: 'Nendoroid Link', manufacturer: 'Good Smile', series: 'Nendoroid' },
+    { strongMatches: [{ name: 'Other', manufacturer: 'X' }], matches: [] }
+  );
+  assert(probe.name === 'Nendoroid Link');
+  assert(probe.manufacturer === 'Good Smile');
+  const fallback = mkt.buildMarketProbeFromSuggestion(null, {
+    strongMatches: [],
+    matches: [{ name: 'FromMatch', franchise: 'Zelda' }]
+  });
+  assert(fallback.name === 'FromMatch');
+  assert(fallback.franchise === 'Zelda');
 });
 
 test('CSS cropper overlay existe', () => {

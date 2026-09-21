@@ -1,4 +1,4 @@
-import { el, toast, imageTypeLabel, setBusy } from '../utils/dom.js';
+import { el, toast, imageTypeLabel, setBusy, formatMoney } from '../utils/dom.js';
 import { prepareImageForAnalysis } from '../utils/imageCrop.js';
 import { navigate } from '../utils/router.js';
 import {
@@ -10,15 +10,26 @@ import {
 import { incrementQuantity, getItem } from '../services/collectionService.js';
 import { getSignedUrls, listItemImages } from '../services/imageService.js';
 import { warmupEmbeddings } from '../services/embeddingService.js';
+import { identifyFigureFromPhoto } from '../services/visionIdentifyService.js';
+import {
+  lookupMarketPrice,
+  buildInstantMarket,
+  classifyDeal,
+  buildMarketProbeFromSuggestion
+} from '../services/marketPriceService.js';
+import { isTcgCardItem } from '../providers/EbayLinkProvider.js';
+import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js';
 
 /** Estado de la sesión de identificación en memoria */
-window.__identifyState = window.__identifyState || null;
+if (typeof globalThis !== 'undefined') {
+  globalThis.__identifyState = globalThis.__identifyState || null;
+}
 
 export async function renderIdentify(root) {
   root.append(el('div', { className: 'page identify-page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Identificar' }),
-      el('p', { className: 'page-sub', text: 'Toma la foto, recorta la figura y compara con TU colección.' })
+      el('p', { className: 'page-sub', text: 'Toma la foto, compara con TU colección y mira el precio de mercado.' })
     ]),
     el('div', { className: 'identify-actions' }, [
       el('label', { className: 'btn btn-primary btn-xl btn-block', html: '📷 Tomar foto<input type="file" accept="image/*" capture="environment" id="id-cam" hidden>' }),
@@ -42,7 +53,7 @@ export async function renderIdentify(root) {
   });
 
   // Restaurar resultados si el usuario vuelve desde Comparación
-  const prev = window.__identifyState;
+  const prev = globalThis.__identifyState;
   if (prev?.result && prev?.previewUrl) {
     const workspace = root.querySelector('#id-workspace');
     workspace.append(
@@ -51,16 +62,21 @@ export async function renderIdentify(root) {
         el('div', { className: 'preview-frame large' }, [el('img', { src: prev.previewUrl, alt: 'Foto nueva' })])
       ])
     );
-    renderResults(workspace, prev.result, prev.previewUrl);
+    renderResults(workspace, prev.result, prev.previewUrl, {
+      suggestion: prev.suggestion || null,
+      marketResult: prev.marketResult || null,
+      file: prev.file || null
+    });
   }
 
   const onFile = async (file) => {
     if (!file) return;
+    abortIdentifyMarket();
     const workspace = root.querySelector('#id-workspace');
     let compressed;
     try {
       compressed = await prepareImageForAnalysis(file, { cropTitle: 'Recortar figura a identificar' });
-      if (!compressed) return; // canceló el recorte
+      if (!compressed) return;
     } catch (err) {
       toast(err.message, 'error');
       return;
@@ -77,27 +93,52 @@ export async function renderIdentify(root) {
     );
 
     try {
-      const result = await recognizeImage(compressed, {
-        onProgress: (p) => {
-          const line = root.querySelector('#id-progress');
-          if (line) line.textContent = p.message || p.stage;
-        },
-        onModelProgress: (p) => {
-          const line = root.querySelector('#id-progress');
-          if (line && p.progress != null) line.textContent = `Modelo ${p.progress}%`;
-        }
-      });
+      const progressLine = () => root.querySelector('#id-progress');
+      const [result, suggestion] = await Promise.all([
+        recognizeImage(compressed, {
+          onProgress: (p) => {
+            const line = progressLine();
+            if (line) line.textContent = p.message || p.stage;
+          },
+          onModelProgress: (p) => {
+            const line = progressLine();
+            if (line && p.progress != null) line.textContent = `Modelo ${p.progress}%`;
+          }
+        }),
+        identifyFigureFromPhoto(compressed, {
+          onProgress: (p) => {
+            const line = progressLine();
+            // No pisa el progreso CLIP si ya hay mensaje; se usa sobre todo para mercado
+            if (line && /gemini|ocr|identific/i.test(p.message || '')) {
+              line.textContent = p.message || p.stage;
+            }
+          }
+        }).catch((err) => {
+          console.warn('[identify] vision suggestion failed', err);
+          return null;
+        })
+      ]);
 
-      window.__identifyState = {
+      globalThis.__identifyState = {
         file: compressed,
         previewUrl,
-        result
+        result,
+        suggestion,
+        marketResult: null
       };
 
-      renderResults(workspace, result, previewUrl);
+      const line = progressLine();
+      if (line) line.remove();
+
+      renderResults(workspace, result, previewUrl, {
+        suggestion,
+        file: compressed,
+        startMarket: true
+      });
     } catch (err) {
       console.error(err);
-      root.querySelector('#id-progress').textContent = '';
+      const line = root.querySelector('#id-progress');
+      if (line) line.textContent = '';
       toast(err.message || 'Error al identificar', 'error');
       workspace.append(el('p', { className: 'error-text', text: err.message }));
     }
@@ -115,12 +156,42 @@ export async function renderIdentify(root) {
   });
 }
 
-function renderResults(workspace, result, previewUrl) {
+function abortIdentifyMarket() {
+  try {
+    globalThis.__identifyMarketAbort?.abort();
+  } catch { /* ignore */ }
+  globalThis.__identifyMarketAbort = null;
+}
+
+/**
+ * @param {object|null} suggestion
+ * @param {object} result
+ */
+export function buildIdentifyProbeItem(suggestion, result) {
+  return buildMarketProbeFromSuggestion(suggestion, result);
+}
+
+function renderResults(workspace, result, previewUrl, opts = {}) {
   const existing = workspace.querySelector('#results-block');
   if (existing) existing.remove();
 
-  const { strongMatches, weakMatches, settings, hasClearMatch } = result;
+  const { strongMatches, weakMatches, hasClearMatch } = result;
+  const suggestion = opts.suggestion || null;
   const block = el('div', { id: 'results-block' });
+
+  if (suggestion?.name) {
+    block.append(
+      el('div', { className: 'notice notice-info' }, [
+        el('p', {
+          text: `Detectado: ${suggestion.name}${suggestion.manufacturer ? ` · ${suggestion.manufacturer}` : ''}`
+        }),
+        el('p', {
+          className: 'muted small',
+          text: 'Usamos esto (y la foto) para buscar el precio de mercado abajo.'
+        })
+      ])
+    );
+  }
 
   if (!strongMatches.length) {
     block.append(
@@ -132,7 +203,7 @@ function renderResults(workspace, result, previewUrl) {
           className: 'btn btn-primary btn-block',
           text: 'Agregar a mi colección',
           onClick: () => {
-            window.__pendingIdentifyFile = window.__identifyState?.file;
+            globalThis.__pendingIdentifyFile = globalThis.__identifyState?.file;
             navigate('add');
           }
         })
@@ -178,14 +249,216 @@ function renderResults(workspace, result, previewUrl) {
               outcome: 'added_new'
             });
           } catch { /* optional */ }
-          window.__pendingIdentifyFile = window.__identifyState?.file;
+          globalThis.__pendingIdentifyFile = globalThis.__identifyState?.file;
           navigate('add');
         }
       })
     );
   }
 
+  // Precio de mercado (antes de comprar / agregar)
+  const marketHost = el('section', { className: 'section market-panel identify-market', id: 'identify-market' }, [
+    el('div', { className: 'market-panel-head' }, [
+      el('h2', { text: 'Precio de mercado' }),
+      el('p', { className: 'page-sub', text: 'Para saber si el hallazgo está a buen precio' })
+    ]),
+    el('div', { className: 'market-toolbar' }, [
+      el('div', { id: 'id-market-status', className: 'status-line muted', text: '…' }),
+      el('button', { type: 'button', className: 'btn btn-ghost hidden', id: 'id-market-cancel', text: 'Detener' }),
+      el('button', { type: 'button', className: 'btn btn-ghost', id: 'id-market-refresh', text: 'Buscar de nuevo' })
+    ]),
+    el('div', { className: 'identify-ask-row' }, [
+      el('label', {}, [
+        el('span', { text: '¿A qué precio la viste? (opcional)' }),
+        el('input', {
+          className: 'input',
+          id: 'id-asking-price',
+          type: 'number',
+          step: '0.01',
+          min: '0',
+          inputmode: 'decimal',
+          placeholder: 'Ej. 45'
+        })
+      ])
+    ]),
+    el('div', { id: 'id-market-deal', className: 'market-deal hidden' }),
+    el('div', { id: 'id-market-body', className: 'market-body' })
+  ]);
+  block.append(marketHost);
   workspace.append(block);
+
+  const probe = buildIdentifyProbeItem(suggestion, result);
+  const marketStatus = marketHost.querySelector('#id-market-status');
+  const marketBody = marketHost.querySelector('#id-market-body');
+  const marketDeal = marketHost.querySelector('#id-market-deal');
+  const askingInput = marketHost.querySelector('#id-asking-price');
+  const cancelBtn = marketHost.querySelector('#id-market-cancel');
+  const refreshBtn = marketHost.querySelector('#id-market-refresh');
+
+  const paintDeal = (marketResult) => {
+    if (!marketDeal) return;
+    const ask = Number(askingInput?.value);
+    const median = marketResult?.median;
+    if (!Number.isFinite(ask) || ask <= 0 || median == null) {
+      marketDeal.className = 'market-deal muted';
+      marketDeal.classList.remove('hidden');
+      marketDeal.textContent = median != null
+        ? `Referencia ~${formatMoney(median, marketResult.currency || 'USD')}. Escribe el precio pedido para ver si es buen trato.`
+        : 'Cuando haya precio de mercado, escribe lo que te piden para comparar.';
+      return;
+    }
+    const deal = classifyDeal(ask, median);
+    marketDeal.className = `market-deal deal-${deal.code || 'unknown'}`;
+    marketDeal.classList.remove('hidden');
+    marketDeal.innerHTML = '';
+    marketDeal.append(
+      el('strong', { text: deal.label || 'Sin veredicto' }),
+      el('p', { text: deal.detail || '' })
+    );
+  };
+
+  const paintMarket = (marketResult) => {
+    paintIdentifyMarketBody(marketBody, marketResult, probe);
+    paintDeal(marketResult);
+    if (globalThis.__identifyState) {
+      globalThis.__identifyState.marketResult = marketResult;
+      globalThis.__identifyState.suggestion = suggestion;
+    }
+  };
+
+  const runMarket = (force = false) => {
+    abortIdentifyMarket();
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    globalThis.__identifyMarketAbort = ac;
+    cancelBtn?.classList.remove('hidden');
+    marketStatus.textContent = 'Buscando precios con la foto…';
+    paintMarket(buildInstantMarket(probe, { imageUrl: previewUrl }));
+
+    lookupMarketPrice(probe, {
+      imageUrl: previewUrl,
+      signal: ac?.signal,
+      maxAttempts: force ? 40 : 24,
+      onProgress: (p) => {
+        if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
+      }
+    }).then((marketResult) => {
+      cancelBtn?.classList.add('hidden');
+      paintMarket(marketResult);
+      if (marketResult.status === 'found') {
+        marketStatus.textContent = marketResult.matches?.length > 1
+          ? `${marketResult.matches.length} precios — elige la referencia mental`
+          : 'Precio encontrado';
+      } else {
+        marketStatus.textContent = marketResult.note || 'Sin precio automático';
+      }
+    }).catch((err) => {
+      cancelBtn?.classList.add('hidden');
+      if (err?.name === 'AbortError') {
+        marketStatus.textContent = 'Búsqueda detenida';
+        return;
+      }
+      marketStatus.textContent = err.message || 'Error al buscar precio';
+    });
+  };
+
+  askingInput?.addEventListener('input', () => {
+    paintDeal(globalThis.__identifyState?.marketResult || null);
+  });
+  cancelBtn?.addEventListener('click', () => {
+    abortIdentifyMarket();
+    cancelBtn.classList.add('hidden');
+    marketStatus.textContent = 'Deteniendo…';
+  });
+  refreshBtn?.addEventListener('click', () => runMarket(true));
+
+  if (opts.marketResult) {
+    paintMarket(opts.marketResult);
+    marketStatus.textContent = opts.marketResult.status === 'found'
+      ? 'Precio de esta foto'
+      : (opts.marketResult.note || 'Sin precio automático');
+  } else if (opts.startMarket || opts.file) {
+    runMarket(false);
+  } else {
+    marketStatus.textContent = 'Pulsa “Buscar de nuevo” para precios';
+  }
+}
+
+function paintIdentifyMarketBody(host, result, probe) {
+  if (!host) return;
+  host.innerHTML = '';
+  if (!result) {
+    host.append(el('p', { className: 'muted', text: 'Sin datos de mercado aún.' }));
+    return;
+  }
+
+  const currency = result.currency || 'USD';
+  const matches = Array.isArray(result.matches) ? result.matches : [];
+  const tcg = Boolean(result.tcg) || isTcgCardItem(probe);
+
+  if (result.auto && result.status === 'found' && matches.length) {
+    const list = el('div', { className: 'market-match-list' });
+    for (const match of matches) {
+      const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
+      list.append(el('article', {
+        className: `market-match-card${isMarketRef ? ' is-market-ref' : ''}`
+      }, [
+        el('div', { className: 'market-match-main' }, [
+          el('strong', { className: 'market-match-price', text: formatMoney(match.price, match.currency || currency) }),
+          isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null,
+          el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
+          el('p', {
+            className: 'muted small',
+            text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
+          })
+        ]),
+        match.url
+          ? el('div', { className: 'market-match-actions' }, [
+            el('a', {
+              className: 'btn btn-ghost',
+              href: match.url,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              text: 'Ver'
+            })
+          ])
+          : null
+      ]));
+    }
+    host.append(list);
+  } else if (result.auto && (result.status === 'empty' || result.status === 'error')) {
+    host.append(el('div', { className: 'notice notice-warn' }, [
+      el('p', { text: result.note || 'No pude leer precios automáticos.' })
+    ]));
+  }
+
+  if (result.median != null) {
+    host.append(el('div', { className: 'market-stats' }, [
+      el('div', { className: 'market-stat main' }, [
+        el('span', { className: 'market-stat-label', text: tcg ? 'Market Price' : 'Referencia' }),
+        el('strong', { text: formatMoney(result.median, currency) })
+      ])
+    ]));
+  }
+
+  const details = el('details', { className: 'market-fallback' }, [
+    el('summary', { text: 'Abrir buscadores (Lens / tiendas)' })
+  ]);
+  const links = [
+    ...(result.visualLinks || []),
+    ...(result.links || []).filter((l) => l.kind !== 'visual' && l.region !== 'VIS')
+  ].slice(0, 10);
+  if (links.length) {
+    details.append(el('div', { className: 'market-query-links' },
+      links.map((l) => el('a', {
+        className: 'market-chip',
+        href: l.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: l.label || l.id
+      }))
+    ));
+    host.append(details);
+  }
 }
 
 function summarize(result) {
@@ -213,8 +486,8 @@ function matchCard(match, previewUrl) {
         className: 'btn btn-primary btn-block',
         text: 'Ver comparación',
         onClick: () => {
-          window.__identifyState = {
-            ...window.__identifyState,
+          globalThis.__identifyState = {
+            ...globalThis.__identifyState,
             selectedMatch: match,
             previewUrl
           };
@@ -227,7 +500,7 @@ function matchCard(match, previewUrl) {
 
 export async function renderCompare(root, params) {
   const itemId = params[0];
-  const state = window.__identifyState;
+  const state = globalThis.__identifyState;
   if (!state?.file || !itemId) {
     root.append(
       el('div', { className: 'page' }, [

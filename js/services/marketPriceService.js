@@ -11,6 +11,24 @@ import {
 const cfg = () => globalThis.APP_CONFIG || globalThis.window?.APP_CONFIG || {};
 
 /**
+ * Arma un “item” temporal para buscar precio desde Identificar (sin DB).
+ * @param {object|null} suggestion  vision/OCR
+ * @param {{ strongMatches?: object[], matches?: object[] }|null} result
+ */
+export function buildMarketProbeFromSuggestion(suggestion, result) {
+  const top = result?.strongMatches?.[0] || result?.matches?.[0] || null;
+  return {
+    name: suggestion?.name || top?.name || '',
+    manufacturer: suggestion?.manufacturer || top?.manufacturer || null,
+    franchise: suggestion?.franchise || top?.franchise || null,
+    series: suggestion?.series || top?.series || null,
+    character_name: suggestion?.character_name || top?.character_name || null,
+    item_number: suggestion?.item_number || top?.item_number || null,
+    category: suggestion?.category || top?.category || null
+  };
+}
+
+/**
  * Consultas AMPLIAS para marketplaces (nunca el título exacto largo).
  * Prioriza: código+marca, serie+personaje, keywords cortas.
  * @param {object} item

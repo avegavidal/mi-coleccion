@@ -935,6 +935,20 @@ a.stat-card:active {
   margin: 4px 0 0;
 }
 
+.identify-ask-row {
+  margin-top: 12px;
+}
+
+.identify-ask-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.identify-market {
+  margin-top: 20px;
+}
+
 .market-body {
   margin-top: 14px;
   display: flex;
