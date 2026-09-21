@@ -445,11 +445,13 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     marketStatus.textContent = 'Buscando precios…';
     latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
     paintMarket(buildInstantMarket(latestProbe, { imageUrl: previewUrl }));
+    const fileBlob = opts.file || globalThis.__identifyState?.file || null;
 
     lookupMarketPrice(latestProbe, {
       imageUrl: previewUrl,
+      imageBlob: fileBlob,
       signal: ac?.signal,
-      maxAttempts: force ? 10 : 6,
+      maxAttempts: force ? 10 : 8,
       onProgress: (p) => {
         if (marketStatus) marketStatus.textContent = p.message || p.stage || 'Buscando…';
       }
@@ -490,48 +492,32 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
     marketStatus.textContent = 'Identificando pieza…';
     setDetected(suggestion);
     const file = opts.file || globalThis.__identifyState?.file;
-    const nameAtSearchStart = { value: '' };
 
-    const identifyPromise = file
-      ? identifyFigureFromPhoto(file, {
-        onProgress: (p) => {
-          if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
-        }
-      }).then((s) => {
-        const better = preferBetterSuggestion(suggestion, s);
-        setDetected(better);
-        if (better?.name) refreshCollectionByName(shell, better, previewUrl);
-        return better;
-      }).catch((err) => {
+    // Esperar identificación completa (Gemini o OCR) — la foto de precio necesita el mejor nombre posible
+    if (file) {
+      try {
+        const s = await identifyFigureFromPhoto(file, {
+          onProgress: (p) => {
+            if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
+          }
+        });
+        setDetected(preferBetterSuggestion(suggestion, s));
+        if (suggestion?.name) refreshCollectionByName(shell, suggestion, previewUrl);
+      } catch (err) {
         console.warn('[identify] vision for market failed', err);
-        return null;
-      })
-      : Promise.resolve(null);
+      }
+    }
 
-    await Promise.race([
-      identifyPromise,
-      new Promise((r) => setTimeout(r, 18000))
-    ]);
-
-    nameAtSearchStart.value = suggestion?.name || '';
-    // Breve pausa tras ID Gemini para no encadenar 429 en la búsqueda de precio
+    // Pausa corta si se usó Gemini, para no encadenar 429
     if (suggestion?.source === 'gemini-web' || suggestion?.source === 'gemini') {
       marketStatus.textContent = 'Identidad lista — preparando búsqueda de precio…';
-      await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, 2000));
     }
+
     if (!suggestion?.name) {
-      marketStatus.textContent = 'Busco precio por foto / datos parciales…';
+      marketStatus.textContent = 'OCR flojo — busco precio directo por la foto…';
     }
     runMarketLookup(false);
-
-    identifyPromise.then((better) => {
-      if (autoRefineDone || !better?.name) return;
-      if (better.name === nameAtSearchStart.value) return;
-      autoRefineDone = true;
-      setDetected(better);
-      marketStatus.textContent = 'Nombre confirmado — actualizando precio…';
-      runMarketLookup(true);
-    });
   };
 
   askingInput?.addEventListener('input', () => {

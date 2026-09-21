@@ -559,6 +559,21 @@ await testAsync('geminiClient no usa modelos 1.5 retireados', async () => {
   assert(Date.now() - t0 >= 15);
 });
 
+test('identityWeak detecta OCR flojo vs identidad sólida', () => {
+  assert(autoM.identityWeak({ name: '' }));
+  assert(autoM.identityWeak({ name: 'Thi The' }));
+  assert(!autoM.identityWeak({
+    name: 'BLEACH Glitter & Glamours Nemu Kurotsuchi',
+    manufacturer: 'Banpresto',
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu'
+  }));
+  assert(!autoM.identityWeak({
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu Kurotsuchi'
+  }));
+});
+
 test('hasUsefulMarketMatches exige precio > 0', () => {
   assert(!autoM.hasUsefulMarketMatches([]));
   assert(!autoM.hasUsefulMarketMatches([{ price: 0 }]));

@@ -126,25 +126,153 @@ export function shouldStopMarketSearch(matches, item, attempt = 1) {
 }
 
 /**
+ * Identidad demasiado floja / OCR basura → hay que priorizar la foto.
+ * @param {object|null|undefined} item
+ */
+export function identityWeak(item) {
+  const name = String(item?.name || '').replace(/\s+/g, ' ').trim();
+  const series = String(item?.series || '').trim();
+  const character = String(item?.character_name || item?.character || '').trim();
+  const manufacturer = String(item?.manufacturer || '').trim();
+  if (series && character) return false;
+  if (name.length >= 14 && !/^(thi|the|this|that|sin nombre)\b/i.test(name)) return false;
+  if (name.length >= 10 && manufacturer) return false;
+  if (manufacturer && series) return false;
+  return true;
+}
+
+/**
  * @param {object} item
- * @param {{ imageUrl?: string|null, onProgress?: (p:{stage:string,message:string,attempt?:number})=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
+ * @param {{ imageUrl?: string|null, imageBlob?: Blob|File|null, onProgress?: (p:{stage:string,message:string,attempt?:number})=>void, limit?: number, signal?: AbortSignal, maxAttempts?: number }} [opts]
  */
 export async function autoSearchMarketMatches(item, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
   const limit = opts.limit || 12;
   const signal = opts.signal;
-  const queries = buildSearchQueries(item);
+  let queries = buildSearchQueries(item);
   const imageUrl = opts.imageUrl || null;
+  const imageBlob = opts.imageBlob || null;
+  const hasPhoto = Boolean(imageBlob || imageUrl);
+  const weakId = identityWeak(item);
+  const preferPhoto = hasPhoto && (weakId || !queries.length);
   /** @type {MarketMatch[]} */
   let matches = [];
   const errors = [];
   const apiKey = readGeminiApiKey();
-  // Pocos intentos útiles > loop eterno sin resultados
-  const maxAttempts = opts.maxAttempts ?? (apiKey ? 6 : 2);
+  const maxAttempts = opts.maxAttempts ?? (apiKey ? (preferPhoto ? 8 : 6) : 2);
 
   const { resolveGeminiModels } = await import('../services/geminiClient.js');
   let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: false }) : [];
   let modelCursor = 0;
+  let photoGeminiOk = false;
+
+  async function runGeminiPass(attempt) {
+    if (!apiKey) return;
+    const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.0-flash';
+    modelCursor += 1;
+    onProgress({
+      stage: 'gemini',
+      attempt,
+      message: preferPhoto
+        ? `IA con foto (${preferModel}) — identifico y busco precio…`
+        : `IA (${preferModel}) + foto/datos — intento ${attempt}…`
+    });
+    try {
+      const geminiMatches = await searchMarketWithGemini(item, {
+        apiKey,
+        imageUrl,
+        imageBlob,
+        queries,
+        limit,
+        preferModel,
+        models: modelList,
+        signal,
+        photoFirst: preferPhoto
+      });
+      if (geminiMatches._imageAttached) photoGeminiOk = true;
+      matches = mergeMatches(matches, geminiMatches);
+      matches = scoreAndSortMatches(matches, item);
+      if (preferPhoto && geminiMatches[0]?.title) {
+        const enriched = { ...item, name: item?.name || geminiMatches[0].title };
+        const q2 = buildSearchQueries(enriched);
+        if (q2.length) queries = q2;
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') throw err;
+      errors.push(`Gemini #${attempt}: ${err.message}`);
+      onProgress({
+        stage: 'gemini',
+        attempt,
+        message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con otras fuentes…`
+      });
+      if (/429|cuota|free:|quota/i.test(err.message)) {
+        try {
+          modelList = await resolveGeminiModels(apiKey, { forceRefresh: true });
+        } catch {
+          // keep
+        }
+        onProgress({ stage: 'wait', attempt, message: 'Cuota IA agotada — espero unos segundos…' });
+        await delay(Math.min(12000, 3500 * attempt), signal);
+      }
+    }
+  }
+
+  async function runEbayPass(attempt) {
+    if (!queries.length) return;
+    onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
+    const provider = new EbayActiveProvider();
+    for (const q of queries.slice(0, 3)) {
+      if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
+      if (signal?.aborted) break;
+      try {
+        const live = await Promise.race([
+          provider.lookup({ query: q, limit: 8 }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
+        ]);
+        const fromListings = (live.listings || []).map((l, i) => {
+          const url = l.url || '';
+          const exact = isDirectListingUrl(url);
+          return {
+            id: `ebay-${attempt}-${q}-${i}-${l.price}`,
+            title: l.title || q,
+            price: Number(l.price),
+            currency: live.currency || 'USD',
+            source: 'ebay',
+            priceType: 'listing',
+            linkExact: exact,
+            url: url || live.searchUrl || ebayMarketUrls(q).active,
+            query: q,
+            note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
+          };
+        });
+        if (fromListings.length) {
+          matches = mergeMatches(matches, fromListings);
+          matches = scoreAndSortMatches(matches, item);
+        } else if (live.median != null) {
+          const synth = [];
+          for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
+            if (price == null) continue;
+            synth.push({
+              id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
+              title: `${label}: ${q}`,
+              price: Number(price),
+              currency: 'USD',
+              source: 'ebay',
+              priceType: 'estimate',
+              linkExact: false,
+              url: live.searchUrl,
+              query: q,
+              note: live.note || 'Resumen orientativo de precios eBay'
+            });
+          }
+          matches = mergeMatches(matches, synth);
+          matches = scoreAndSortMatches(matches, item);
+        }
+      } catch (err) {
+        errors.push(`eBay “${q}”: ${err.message}`);
+      }
+    }
+  }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) {
@@ -154,116 +282,30 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     onProgress({
       stage: 'attempt',
       attempt,
-      message: `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
+      message: preferPhoto
+        ? `Intento ${attempt}/${maxAttempts}: precio por foto…`
+        : `Intento ${attempt}/${maxAttempts}: buscando precio útil…`
     });
 
-    // 1) eBay primero (no gasta cuota Gemini; suele bastar en figuras)
-    if (queries.length) {
-      onProgress({ stage: 'ebay', attempt, message: `eBay automático (intento ${attempt})…` });
-      const provider = new EbayActiveProvider();
-      for (const q of queries.slice(0, 3)) {
-        if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
-        if (signal?.aborted) break;
-        try {
-          const live = await Promise.race([
-            provider.lookup({ query: q, limit: 8 }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 14000))
-          ]);
-          const fromListings = (live.listings || []).map((l, i) => {
-            const url = l.url || '';
-            const exact = isDirectListingUrl(url);
-            return {
-              id: `ebay-${attempt}-${q}-${i}-${l.price}`,
-              title: l.title || q,
-              price: Number(l.price),
-              currency: live.currency || 'USD',
-              source: 'ebay',
-              priceType: 'listing',
-              linkExact: exact,
-              url: url || live.searchUrl || ebayMarketUrls(q).active,
-              query: q,
-              note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
-            };
-          });
-          if (fromListings.length) {
-            matches = mergeMatches(matches, fromListings);
-            matches = scoreAndSortMatches(matches, item);
-          } else if (live.median != null) {
-            const synth = [];
-            for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
-              if (price == null) continue;
-              synth.push({
-                id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
-                title: `${label}: ${q}`,
-                price: Number(price),
-                currency: 'USD',
-                source: 'ebay',
-                priceType: 'estimate',
-                linkExact: false,
-                url: live.searchUrl,
-                query: q,
-                note: live.note || 'Resumen orientativo de precios eBay'
-              });
-            }
-            matches = mergeMatches(matches, synth);
-            matches = scoreAndSortMatches(matches, item);
-          }
-        } catch (err) {
-          errors.push(`eBay “${q}”: ${err.message}`);
-        }
-      }
-    }
-
-    if (shouldStopMarketSearch(matches, item, attempt)) break;
-
-    // 2) Gemini (después de eBay para no chocar con cuota de la identificación)
-    if (apiKey) {
-      const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.0-flash';
-      modelCursor += 1;
-      onProgress({
-        stage: 'gemini',
-        attempt,
-        message: `IA (${preferModel}) + foto/datos — intento ${attempt}…`
-      });
-      try {
-        const geminiMatches = await searchMarketWithGemini(item, {
-          apiKey,
-          imageUrl,
-          queries,
-          limit,
-          preferModel,
-          models: modelList,
-          signal
-        });
-        matches = mergeMatches(matches, geminiMatches);
-        matches = scoreAndSortMatches(matches, item);
-      } catch (err) {
-        if (err.name === 'AbortError') throw err;
-        errors.push(`Gemini #${attempt}: ${err.message}`);
-        onProgress({
-          stage: 'gemini',
-          attempt,
-          message: `IA falló (${String(err.message).slice(0, 80)}). Sigo con otras fuentes…`
-        });
-        if (/429|cuota|free:|quota/i.test(err.message)) {
-          try {
-            modelList = await resolveGeminiModels(apiKey, { forceRefresh: true });
-          } catch {
-            // keep
-          }
-          // Enfriar cuota antes del siguiente intento
-          onProgress({ stage: 'wait', attempt, message: 'Cuota IA agotada — espero unos segundos…' });
-          await delay(Math.min(12000, 3500 * attempt), signal);
-        }
-      }
-    } else if (attempt === 1) {
+    if (!apiKey && attempt === 1) {
       errors.push('Sin Gemini API key: ve a Configuración y guárdala para precios automáticos.');
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
     }
 
+    if (preferPhoto) {
+      await runGeminiPass(attempt);
+      if (shouldStopMarketSearch(matches, item, attempt)) break;
+      await runEbayPass(attempt);
+    } else {
+      await runEbayPass(attempt);
+      if (shouldStopMarketSearch(matches, item, attempt) && !(hasPhoto && weakId && !photoGeminiOk)) {
+        break;
+      }
+      await runGeminiPass(attempt);
+    }
+
     if (shouldStopMarketSearch(matches, item, attempt)) break;
 
-    // 3) Índice web solo como último recurso (ruido alto)
     if (queries[0] && attempt >= 2 && !shouldStopMarketSearch(matches, item, attempt)) {
       onProgress({ stage: 'web', attempt, message: `Índice web (último recurso, intento ${attempt})…` });
       try {
@@ -276,7 +318,6 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     }
 
     if (shouldStopMarketSearch(matches, item, attempt)) break;
-
     if (attempt >= maxAttempts) break;
 
     const hasSome = hasUsefulMarketMatches(matches);
@@ -432,7 +473,7 @@ function soften(name) {
 
 /**
  * @param {object} item
- * @param {{ apiKey: string, imageUrl?: string|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal }} opts
+ * @param {{ apiKey: string, imageUrl?: string|null, imageBlob?: Blob|File|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal, photoFirst?: boolean }} opts
  * @returns {Promise<MarketMatch[]>}
  */
 export async function searchMarketWithGemini(item, opts) {
@@ -450,7 +491,17 @@ export async function searchMarketWithGemini(item, opts) {
   ].filter(Boolean).join('\n');
 
   const tcg = isTcgCardItem(item);
+  const photoFirst = Boolean(opts.photoFirst);
+  const photoBlock = photoFirst
+    ? `CRITICAL — PHOTO FIRST:
+- A product PHOTO is attached. Identify the EXACT product from the image (box text, logos, character, line like Glitter & Glamours / Nendoroid / G×materia).
+- Ignore weak/empty Item data if it conflicts with what you see on the box.
+- Then search LIVE web for that product's current prices.
+- Put the official product title in each match "title".`
+    : '';
+
   const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'ANIME FIGURE / prize figure specialist'}).
+${photoBlock}
 ${tcg
     ? `For TCG cards, the PRIMARY reference price is TCGPlayer "Market Price" (NOT Low Price, NOT Mid listing, NOT listed asking price).
 Search TCGPlayer first and return the Market Price for the exact card (same set + collector number + finish/foil when visible).
@@ -461,9 +512,9 @@ DO NOT return TCGPlayer / Cardmarket / PriceCharting card prices even if a same-
 Include "figure", "Banpresto", or the figure line (e.g. Glitter & Glamours) in the match title when known.`}
 
 Item data:
-${meta || '(minimal data)'}
+${meta || '(use the PHOTO — data may be empty or OCR noise)'}
 
-Search hints: ${searchHint}
+Search hints: ${searchHint || '(derive search terms from the PHOTO)'}
 
 Return ONLY valid JSON (no markdown) with this shape:
 {
@@ -495,14 +546,22 @@ ${tcg
 - Never claim a store listing price without a matching product/listing url when one exists.`;
 
   const parts = [{ text: prompt }];
+  let imageAttached = false;
 
-  if (opts.imageUrl) {
-    try {
-      const imgPart = await fetchImageAsInlinePart(opts.imageUrl);
-      if (imgPart) parts.push(imgPart);
-    } catch {
-      // sin foto sigue por texto
+  try {
+    const imgPart = opts.imageBlob
+      ? await blobToInlinePart(opts.imageBlob)
+      : (opts.imageUrl ? await fetchImageAsInlinePart(opts.imageUrl) : null);
+    if (imgPart) {
+      parts.push(imgPart);
+      imageAttached = true;
     }
+  } catch (err) {
+    console.warn('[market] no se pudo adjuntar foto a Gemini', err);
+  }
+
+  if (photoFirst && !imageAttached) {
+    throw new Error('No pude adjuntar la foto a la IA — reintenta');
   }
 
   const {
@@ -531,7 +590,7 @@ ${tcg
     });
     const text = geminiTextFromResponse(out.data);
     const parsed = parseGeminiMarketMatches(text, searchHint);
-    // Devolver lo que haya; el loop decide si es fiable o hay que reintentar
+    parsed._imageAttached = imageAttached;
     if (parsed.length) return parsed;
   } catch (err) {
     if (err.name === 'AbortError') throw err;
@@ -545,7 +604,9 @@ ${tcg
       preferModel: opts.preferModel
     });
     const text = geminiTextFromResponse(out.data);
-    return parseGeminiMarketMatches(text, searchHint);
+    const parsed = parseGeminiMarketMatches(text, searchHint);
+    parsed._imageAttached = imageAttached;
+    return parsed;
   } catch (err) {
     if (err.name === 'AbortError') throw err;
     throw new Error(String(err.message || lastErr || formatGeminiHttpError(0, '')).slice(0, 280));
@@ -638,17 +699,24 @@ export function pickTcgReferenceMatch(matches) {
   return list[0] || null;
 }
 
-async function fetchImageAsInlinePart(imageUrl) {
-  const res = await fetch(imageUrl);
-  if (!res.ok) return null;
-  const blob = await res.blob();
+async function blobToInlinePart(blob) {
+  if (!blob) return null;
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
   const b64 = btoa(binary);
   const mime = blob.type || 'image/jpeg';
   return { inline_data: { mime_type: mime, data: b64 } };
+}
+
+async function fetchImageAsInlinePart(imageUrl) {
+  const res = await fetch(imageUrl);
+  if (!res.ok) return null;
+  return blobToInlinePart(await res.blob());
 }
 
 function parseJsonObject(text) {

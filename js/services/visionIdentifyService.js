@@ -123,7 +123,6 @@ confidence ("high"|"medium"|"low").`;
 
   let data;
   try {
-    // Misma estrategia que precios: grounding web → nombre oficial
     const out = await geminiGenerateContent(apiKey, bodyWithTools);
     data = out.data;
   } catch {
@@ -131,11 +130,23 @@ confidence ("high"|"medium"|"low").`;
     data = out.data;
   }
 
-  const text = geminiTextFromResponse(data);
-  const parsed = parseJsonObject(text);
+  let text = geminiTextFromResponse(data);
+  let parsed = parseJsonObject(text);
+  // Si grounding no dio nombre usable, reintentar sin tools
+  if (!parsed?.name) {
+    try {
+      const out = await geminiGenerateContent(apiKey, bodyPlain);
+      text = geminiTextFromResponse(out.data);
+      parsed = parseJsonObject(text) || parsed;
+    } catch {
+      // keep first
+    }
+  }
   if (!parsed) throw new Error('Gemini no devolvió JSON usable');
+  const normalized = normalizeSuggestion(parsed);
+  if (!normalized.name) throw new Error('Gemini no identificó el producto');
   return {
-    ...normalizeSuggestion(parsed),
+    ...normalized,
     source: 'gemini-web'
   };
 }
@@ -265,7 +276,11 @@ function pickNameLine(lines, brand) {
   const scored = lines.map((line) => {
     let score = line.length;
     if (/^[0-9\W]+$/.test(line)) score -= 50;
+    if (/glitter|glamours|nendoroid|figma|materia|ichiban|banpresto|bleach|dragon\s*ball/i.test(line)) score += 40;
+    if (/nemu|kurotsuchi|vegeta|goku|link|zelda/i.test(line)) score += 30;
+    if (brand && line.toLowerCase().includes(brand.toLowerCase())) score -= 10;
     if (brand && line.toLowerCase() === brand.toLowerCase()) score -= 40;
+    if (/made in|copyright|spirits|namco|shueisha/i.test(line)) score -= 25;
     if (/www\.|\.com|http/i.test(line)) score -= 40;
     if (/nendoroid|figma|figuarts|statue|scale/i.test(line)) score += 20;
     if (/\p{L}{3,}/u.test(line)) score += 10;
