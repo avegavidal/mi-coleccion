@@ -81,24 +81,29 @@ async function identifyWithGemini(file, apiKey) {
   const base64 = await blobToBase64(file);
   const mime = file.type || 'image/jpeg';
   const prompt = `You identify collectibles from a photo using LIVE web search when possible.
-Products: anime/game figures OR trading cards (Pokemon, MTG, Yu-Gi-Oh, One Piece, Lorcana, etc.).
+Products: anime/game FIGURES (Banpresto, Good Smile, Bandai Spirits, Kotobukiya…) OR trading cards (Pokemon TCG, MTG, Yu-Gi-Oh…).
 
-CRITICAL:
-- Prefer the OFFICIAL retail product title (Bandai, Good Smile, etc.), not OCR noise from the box.
-- Good examples: "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
+CRITICAL — product type:
+- A BOX or packaging that says "figure", "large scale figure", Banpresto, Ban Dai Spirits, Glitter & Glamours, G×materia, Nendoroid, figma, Ichibansho, Pop Up Parade → it is a FIGURE, never a trading card.
+- Flat cardboard BOX of a figure is still a figure (not a TCG card).
+- Only use category "TCG" / "Carta" for actual trading cards (holo card front, set symbol, collector number like 25/198).
+
+CRITICAL — title:
+- Prefer the OFFICIAL retail product title (Bandai, Good Smile, Banpresto, etc.), not OCR noise from the box.
+- Good examples: "BLEACH Glitter & Glamours Nemu Kurotsuchi", "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
 - Bad examples (never invent these): "Thi The Vegeta 14", random partial box text.
-- Include the line/series when known (G×materia, Ichibansho, Nendoroid, figma, S.H.Figuarts…).
+- Include the line/series when known (Glitter & Glamours, G×materia, Ichibansho, Nendoroid, figma, S.H.Figuarts…).
 - Search retailers / listings if unsure.
 
 Return ONLY valid JSON (no markdown) with keys:
 name (string, official searchable product title),
 manufacturer (string or null),
 franchise (string or null),
-series (string or null, e.g. G×materia / Nendoroid / Scarlet & Violet),
+series (string or null, e.g. Glitter & Glamours / G×materia / Nendoroid / Scarlet & Violet),
 character_name (string or null),
 item_number (string or null),
 year (number or null),
-category (string or null — use "TCG" or "Carta" if trading card),
+category (string or null — "Figura" for figures; "TCG" or "Carta" ONLY for trading cards),
 confidence ("high"|"medium"|"low").`;
 
   const { geminiGenerateContent, geminiTextFromResponse } = await import('./geminiClient.js');
@@ -196,6 +201,8 @@ export function suggestionFromOcrText(text) {
     };
   }
 
+  const looksFigure = /\b(figure|figura|banpresto|glitter|nendoroid|figma|figuarts|scale|g\s*[x×]\s*materia|ichiban)\b/i.test(full)
+    || /\b(banpresto|good\s*smile|bandai\s*spirits)\b/i.test(manufacturer || '');
   return normalizeSuggestion({
     name: name || [manufacturer, series, itemNumber].filter(Boolean).join(' '),
     manufacturer,
@@ -204,7 +211,7 @@ export function suggestionFromOcrText(text) {
     character_name: null,
     item_number: itemNumber,
     year: detectYear(full),
-    category: series || null,
+    category: looksFigure ? 'Figura' : null,
     confidence: name && (manufacturer || itemNumber) ? 'medium' : 'low',
     source: 'ocr',
     rawText: text
@@ -232,6 +239,7 @@ function detectSeries(text) {
   if (/funko|pop!/.test(lower)) return 'Funko Pop';
   if (/g\s*[x×]\s*materia|gxmateria/i.test(lower)) return 'G×materia';
   if (/ichibansho|ichiban kuji/i.test(lower)) return 'Ichibansho';
+  if (/glitter\s*&\s*glamours|glitter\s+and\s+glamours/i.test(lower)) return 'Glitter & Glamours';
   return null;
 }
 
@@ -280,15 +288,26 @@ function normalizeSuggestion(obj) {
     return String(v).trim() || null;
   };
   const year = obj.year != null && obj.year !== '' ? Number(obj.year) : null;
+  const name = str(obj.name) || '';
+  const manufacturer = str(obj.manufacturer);
+  const series = str(obj.series);
+  const franchise = str(obj.franchise);
+  const character_name = str(obj.character_name);
+  const item_number = str(obj.item_number);
+  let category = str(obj.category);
+  const blob = [category, series, franchise, name, manufacturer].filter(Boolean).join(' ');
+  if (/\b(figure|figura|nendoroid|figma|figuarts|banpresto|glitter\s*&\s*glamours|glitter\s+and\s+glamours|g\s*[x×]\s*materia|ichibansho|pop\s*up\s*parade|prize)\b/i.test(blob)) {
+    category = 'Figura';
+  }
   return {
-    name: str(obj.name) || '',
-    manufacturer: str(obj.manufacturer),
-    franchise: str(obj.franchise),
-    series: str(obj.series),
-    character_name: str(obj.character_name),
-    item_number: str(obj.item_number),
+    name,
+    manufacturer,
+    franchise,
+    series,
+    character_name,
+    item_number,
     year: Number.isFinite(year) ? year : null,
-    category: str(obj.category),
+    category,
     confidence: obj.confidence || 'medium',
     source: obj.source || 'unknown',
     rawText: obj.rawText || null,

@@ -3,8 +3,21 @@
  * Incluye TCGPlayer + Cardmarket para cartas.
  */
 
+/** Señales claras de figura / prize / escala (nunca buscar como carta). */
+const FIGURE_SIGNAL_RE = /\b(figure|figura|figuras|nendoroid|figma|figuarts|banpresto|ban.?dai\s*spirits|prize\s*figure|glitter\s*&\s*glamours|glitter\s+and\s+glamours|pop\s*up\s*parade|g\s*[x×]\s*materia|ichibansho|ichiban\s*kuji|scale\s*figure|\d+\/\d+\s*scale|statue|soft\s*vinyl|sofubi|garage\s*kit|resin\s*kit|model\s*kit|plamodel|gunpla)\b/i;
+
+/** Categoría / tipo explícito de carta. */
+const EXPLICIT_CARD_CATEGORY_RE = /\b(tcg|trading\s*cards?|cartas?\s*(tcg|coleccionables?)?|collectible\s*card|\bcarta\b)\b/i;
+
+/** Juegos de cartas (requieren contexto de carta, no solo franchise de anime). */
+const CARD_GAME_RE = /\b(pokemon|pokémon|yu-?gi-?oh|magic:?\s*the\s*gathering|\bmtg\b|one\s*piece\s*(card|tcg|optcg)|digimon\s*(card|tcg)|lorcana|flesh\s*and\s*blood|cardfight|vanguard|weiss\s*schwarz|battle\s*spirits|dragon\s*ball\s*(super\s*)?(card|fusion\s*world)|dbs\s*fw|union\s*arena|tcgplayer|cardmarket)\b/i;
+
+/** Pistas de producto-carta (número de coleccionista, rareza, etc.). */
+const CARD_PRODUCT_RE = /\b(trading\s*card|\bsingle\b|holo|reverse\s*holo|full\s*art|alt\s*art|secret\s*rare|ultra\s*rare|illustration\s*rare|\bir\b|sar|near\s*mint|\bnm\b|psa\s*\d|cgc\s*\d|\d{1,3}\s*\/\s*\d{2,3})\b/i;
+
 /**
- * Detecta si la pieza parece una carta TCG.
+ * Detecta si la pieza parece una carta TCG (no una figura del mismo franchise).
+ * Figuras Banpresto / Glitter & Glamours / Nendoroid etc. NO son cartas aunque sean de Pokémon o Bleach.
  * @param {object|string|null|undefined} itemOrText
  */
 export function isTcgCardItem(itemOrText) {
@@ -16,9 +29,31 @@ export function isTcgCardItem(itemOrText) {
       itemOrText?.franchise,
       itemOrText?.name,
       itemOrText?.manufacturer,
-      itemOrText?.collections?.name
+      itemOrText?.collections?.name,
+      itemOrText?.note
     ].filter(Boolean).join(' ');
-  return /tcg|trading\s*card|carta|cards?|pokemon|pokémon|yu-?gi-?oh|magic:?\s*the\s*gathering|\bmtg\b|one\s*piece\s*card|digimon\s*card|lorcana|flesh\s*and\s*blood|\bfab\b|cardfight|vanguard|weiss|schwarz|battle\s*spirits|dragon\s*ball\s*(super\s*)?card|dbs\s*fw|union\s*arena/i.test(String(text || ''));
+  const blob = String(text || '').trim();
+  if (!blob) return false;
+
+  // Caja / línea de figura gana siempre (evita Bleach/Pokémon prize → TCGPlayer)
+  if (FIGURE_SIGNAL_RE.test(blob)) return false;
+
+  const category = typeof itemOrText === 'object' && itemOrText
+    ? String(itemOrText.category || '')
+    : '';
+  if (/\b(tcg|trading\s*cards?|cartas?|collectible\s*card)\b/i.test(category)) {
+    return true;
+  }
+
+  if (/\b(trading\s*cards?|tcg\b|cartas?\s*tcg)\b/i.test(blob)) return true;
+  if (CARD_PRODUCT_RE.test(blob) && CARD_GAME_RE.test(blob)) return true;
+  // Solo juego de cartas + palabra card/carta (no franchise solo)
+  if (CARD_GAME_RE.test(blob) && /\b(cards?|cartas?|single|holo)\b/i.test(blob)) return true;
+  // Categoría/series explícitas tipo Weiss Schwarz sin figura
+  if (/\b(weiss\s*schwarz|cardfight\s*vanguard|union\s*arena|flesh\s*and\s*blood)\b/i.test(blob)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -317,7 +352,13 @@ export function storeLinkForMatch(match) {
   const title = String(match?.title || match?.query || '').trim().slice(0, 140);
   if (!title) return direct;
   const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
-  const tcg = /tcg|cardmarket|pricechart|pokemon|yugioh|mtg/.test(s + title);
+  const tcg = isTcgCardItem({
+    source: match?.source,
+    name: title,
+    title,
+    category: match?.category,
+    series: match?.series
+  }) || /^(tcgplayer|cardmarket|pricecharting)$/i.test(s);
   const price = Number(match?.price);
   const links = buildShopLinksForQuery(title, { tcg });
   let id = STORE_LINK_IDS[s] || '';

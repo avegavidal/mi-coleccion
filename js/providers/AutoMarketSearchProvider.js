@@ -228,7 +228,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   const primaryQuery = queries[0] || '';
   const shopIds = tcg
     ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
-    : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'tcgplayer', 'cardmarket'];
+    : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
 
   const ref = tcg ? pickTcgReferenceMatch(matches) : null;
   const refPrice = ref?.price != null ? Number(ref.price) : null;
@@ -291,7 +291,11 @@ function buildSearchQueries(item) {
   }
 
   if (series && character) parts.push([series, character, manufacturer].filter(Boolean).join(' '));
+  if (!tcg && series && character) parts.unshift([series, character, 'figure'].filter(Boolean).join(' '));
   if (soft) parts.push(soft);
+  if (!tcg && soft && !/\bfigure|figura|banpresto|nendoroid\b/i.test(soft)) {
+    parts.push(`${soft} figure`);
+  }
   if (franchise && character) parts.push([franchise, character].join(' '));
   if (manufacturer && itemNumber) parts.push([manufacturer, itemNumber].join(' '));
   if (manufacturer && character) parts.push([manufacturer, character].join(' '));
@@ -344,12 +348,15 @@ export async function searchMarketWithGemini(item, opts) {
   ].filter(Boolean).join('\n');
 
   const tcg = isTcgCardItem(item);
-  const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'figures and collectibles'}).
+  const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'ANIME FIGURE / prize figure specialist'}).
 ${tcg
     ? `For TCG cards, the PRIMARY reference price is TCGPlayer "Market Price" (NOT Low Price, NOT Mid listing, NOT listed asking price).
 Search TCGPlayer first and return the Market Price for the exact card (same set + collector number + finish/foil when visible).
 You may also include Cardmarket trend / PriceCharting as secondary options, clearly labeled.`
-    : 'Search the LIVE web for current asking/sold prices (eBay, Amazon, Mercari, AmiAmi, Yahoo Auctions JP).'}
+    : `This item is a FIGURE (Banpresto / Bandai Spirits / Good Smile / scale / prize), NOT a trading card.
+Search eBay sold/active, AmiAmi, Mercari, Yahoo Auctions JP, Amazon for the FIGURE listing.
+DO NOT return TCGPlayer / Cardmarket / PriceCharting card prices even if a same-character TCG card exists.
+Include "figure", "Banpresto", or the figure line (e.g. Glitter & Glamours) in the match title when known.`}
 
 Item data:
 ${meta || '(minimal data)'}
@@ -361,10 +368,10 @@ Return ONLY valid JSON (no markdown) with this shape:
   "found": true|false,
   "matches": [
     {
-      "title": "card/product title including set/number if card",
+      "title": "product title (figure line + character, or card set/number if card)",
       "price": 49.99,
       "currency": "USD",
-      "source": "${tcg ? 'tcgplayer|cardmarket|pricecharting|ebay|other' : 'ebay|amazon|mercari|amiami|yahoo|tcgplayer|cardmarket|other'}",
+      "source": "${tcg ? 'tcgplayer|cardmarket|pricecharting|ebay|other' : 'ebay|amazon|mercari|amiami|yahoo|other'}",
       "priceType": "${tcg ? 'market|low|mid|listing|estimate' : 'listing|estimate'}",
       "url": "https://...",
       "note": "short why it matches"
@@ -375,13 +382,14 @@ Rules:
 - price must be a number in USD when possible (convert EUR/JPY if needed; note original in "note").
 - Include 1–8 matches if found; empty array if none.
 - CRITICAL: "price" MUST be the price of the exact listing/product at "url". Do not invent prices.
-- Prefer REAL listing URLs: ebay.com/itm/..., amazon.com/dp/..., mercari.com/item/..., tcgplayer.com/product/...
+- Prefer REAL listing URLs: ebay.com/itm/..., amazon.com/dp/..., mercari.com/item/..., amiami.com/.../detail/...${tcg ? ', tcgplayer.com/product/...' : ''}.
 - If you cannot find the listing URL, set priceType to "estimate" and say so in note. Still set source correctly.
 ${tcg
     ? `- CRITICAL: at least one match MUST be TCGPlayer Market Price when available, with "source":"tcgplayer" and "priceType":"market" and note "TCGPlayer Market Price".
 - Prefer Near Mint Market Price; put foil / alternate art as separate matches.
 - Do NOT use Low Price as the main reference.`
-    : '- If multiple variants exist, include several so the user can pick the ideal one.'}
+    : `- If multiple variants exist (A/B colorways, open box vs sealed), include several so the user can pick.
+- Never substitute a trading-card price for a figure.`}
 - Never claim a store listing price without a matching product/listing url when one exists.`;
 
   const parts = [{ text: prompt }];

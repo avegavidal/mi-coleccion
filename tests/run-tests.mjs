@@ -339,8 +339,23 @@ test('enlaces US/JP incluyen eBay, Amazon y Yahoo JP', () => {
 
 test('TCGPlayer y Cardmarket priorizados para cartas', () => {
   assert(ebayLinks.isTcgCardItem({ category: 'TCG', name: 'Charizard ex' }));
-  assert(ebayLinks.isTcgCardItem({ franchise: 'Pokemon', name: 'Pikachu 025' }));
+  assert(ebayLinks.isTcgCardItem({ category: 'Carta', franchise: 'Pokemon', name: 'Pikachu 025' }));
+  assert(ebayLinks.isTcgCardItem({ name: 'Charizard ex 223/197 holo', franchise: 'Pokemon' }));
   assert(!ebayLinks.isTcgCardItem({ series: 'Nendoroid', name: 'Link' }));
+  assert(!ebayLinks.isTcgCardItem({
+    manufacturer: 'Banpresto',
+    series: 'Glitter & Glamours',
+    name: 'Nemu Kurotsuchi',
+    franchise: 'Bleach',
+    category: 'Figura'
+  }));
+  assert(!ebayLinks.isTcgCardItem({
+    manufacturer: 'Banpresto',
+    name: 'Pokemon Pikachu prize figure',
+    franchise: 'Pokemon'
+  }));
+  // Franchise solo (sin señales de carta) no basta
+  assert(!ebayLinks.isTcgCardItem({ franchise: 'Pokemon', name: 'Pikachu' }));
   const links = ebayLinks.buildShopLinksForQuery('Charizard ex 223', { tcg: true });
   assert(links[0].id === 'tcgplayer', links[0].id);
   assert(links.some((l) => l.id === 'cardmarket'));

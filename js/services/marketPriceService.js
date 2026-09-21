@@ -384,7 +384,7 @@ export function buildInstantMarket(item, opts = {}) {
     : [];
   const preferredIds = tcg
     ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold']
-    : ['ebay-sold', 'amazon-us', 'amazon-jp', 'tcgplayer', 'cardmarket'];
+    : ['ebay-sold', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
   const queryGroups = queries.map((q) => ({
     query: q,
     links: filterLinks(buildShopLinksForQuery(q, { tcg })).filter((l) => preferredIds.includes(l.id))

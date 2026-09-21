@@ -1,5 +1,5 @@
 /* Service Worker — network-first para HTML/JS/CSS (evita UI vieja en iPhone) */
-const CACHE = 'mi-coleccion-v25';
+const CACHE = 'mi-coleccion-v26';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'
