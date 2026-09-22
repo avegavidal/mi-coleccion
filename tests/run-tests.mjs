@@ -376,13 +376,16 @@ test('TCGPlayer y Cardmarket priorizados para cartas', () => {
 });
 
 test('storeLinkForMatch abre la tienda del precio', () => {
-  const direct = ebayLinks.storeLinkForMatch({
+  const trusted = ebayLinks.storeLinkForMatch({
     source: 'ebay',
     title: 'Nendoroid Link',
-    url: 'https://www.ebay.com/itm/123'
+    url: 'https://www.ebay.com/itm/123456789012',
+    urlTrusted: true
   });
-  assert(direct === 'https://www.ebay.com/itm/123');
-  assert(ebayLinks.isDirectListingUrl('https://www.ebay.com/itm/123456'));
+  assert(/\/itm\/123456789012/.test(trusted), trusted);
+  assert(ebayLinks.isDirectListingUrl('https://www.ebay.com/itm/123456789012'));
+  assert(ebayLinks.isPlausibleListingUrl('https://www.ebay.com/itm/123456789012'));
+  assert(!ebayLinks.isPlausibleListingUrl('https://www.ebay.com/itm/123')); // Gemini inventado
   assert(!ebayLinks.isDirectListingUrl('https://www.ebay.com/sch/i.html?_nkw=test'));
   assert(!ebayLinks.normalizeMarketUrl('https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc'));
   const tcg = ebayLinks.storeLinkForMatch({ source: 'tcgplayer', title: 'Charizard ex 223' });
@@ -392,19 +395,29 @@ test('storeLinkForMatch abre la tienda del precio', () => {
   assert(/amazon\.com\/s\?k=/.test(amz), amz);
   const ebayBand = ebayLinks.storeLinkForMatch({ source: 'ebay', title: 'Nemu Figure', price: 28 });
   assert(/_udlo=/.test(ebayBand) && /_udhi=/.test(ebayBand), ebayBand);
-  const metaExact = ebayLinks.listingLinkMeta({
+  // Sin urlTrusted, un /itm/ de Gemini NO se abre (evita Not Found)
+  const fakeItm = ebayLinks.listingLinkMeta({
     source: 'ebay',
-    title: 'x',
-    url: 'https://www.ebay.com/itm/999',
+    title: 'Nendoroid Link Twilight Princess',
+    url: 'https://www.ebay.com/itm/999999999',
     price: 20
   });
-  assert(metaExact.exact);
-  assert(/anuncio/i.test(metaExact.label));
+  assert(!fakeItm.exact, 'no debe marcar exacto sin urlTrusted');
+  assert(/sch\/i\.html|_nkw=/.test(fakeItm.url), fakeItm.url);
+  assert(/Link|Nendoroid|Twilight/i.test(decodeURIComponent(fakeItm.url)), fakeItm.url);
+  const metaTrusted = ebayLinks.listingLinkMeta({
+    source: 'ebay',
+    title: 'Nendoroid Link',
+    url: 'https://www.ebay.com/itm/123456789012',
+    price: 20,
+    urlTrusted: true
+  });
+  assert(metaTrusted.exact);
+  assert(/anuncio/i.test(metaTrusted.label));
   const metaSearch = ebayLinks.listingLinkMeta({ source: 'mercari', title: 'Nemu', price: 25 });
   assert(!metaSearch.exact);
   assert(/Buscar/i.test(metaSearch.label));
   assert(ebayLinks.storeLabel('cardmarket') === 'Cardmarket');
-  // Enlace debe ser de ESTA pieza, no de otra figura
   const item = {
     name: 'BLEACH Glitter & Glamours Nemu Kurotsuchi',
     series: 'Glitter & Glamours',
@@ -417,8 +430,9 @@ test('storeLinkForMatch abre la tienda del precio', () => {
   const wrongListing = ebayLinks.listingLinkMeta({
     source: 'ebay',
     title: 'BLEACH Glitter & Glamours Orihime Inoue',
-    url: 'https://www.ebay.com/itm/555',
-    price: 30
+    url: 'https://www.ebay.com/itm/123456789012',
+    price: 30,
+    urlTrusted: true
   }, item);
   assert(!wrongListing.exact, 'no debe abrir anuncio de otra figura');
   assert(/Nemu|Glitter/i.test(decodeURIComponent(wrongListing.url)), wrongListing.url);

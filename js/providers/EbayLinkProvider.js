@@ -377,6 +377,22 @@ export function isDirectListingUrl(url) {
 }
 
 /**
+ * Anuncio con ID creíble. Gemini inventa /itm/ cortos → eBay "Not Found".
+ * @param {string} url
+ */
+export function isPlausibleListingUrl(url) {
+  const u = normalizeMarketUrl(url);
+  if (!u || !isDirectListingUrl(u)) return false;
+  if (/ebay\./i.test(u)) return /ebay\.[^/]+\/itm\/\d{9,14}(?:\b|\/|\?|#|$)/i.test(u);
+  if (/amazon\./i.test(u)) return /amazon\.[^/]+\/(?:dp|gp\/product)\/[A-Z0-9]{10}\b/i.test(u);
+  if (/mercari\./i.test(u)) return /\/item\/[a-z0-9]{6,}/i.test(u);
+  if (/tcgplayer\.com\/product\/\d{4,}/i.test(u)) return true;
+  if (/amiami\.com\/.+\/detail/i.test(u)) return true;
+  if (/yahoo\.co\.jp\/jp\/auction\/[a-z0-9]+/i.test(u)) return true;
+  return true;
+}
+
+/**
  * ¿Se puede abrir en navegador como tienda/búsqueda conocida?
  * @param {string} url
  */
@@ -502,9 +518,12 @@ export function listingLinkMeta(match, item = null) {
   const source = storeLabel(match?.source);
   const raw = normalizeMarketUrl(match?.url);
   const belongs = matchBelongsToItem(match, item);
+  // Solo abrir /itm/ si lo scrapamos nosotros (urlTrusted). Los de Gemini suelen 404.
+  const trustedExact = match?.urlTrusted === true
+    && isPlausibleListingUrl(raw)
+    && belongs;
 
-  // Anuncio exacto solo si el título encaja con la pieza analizada
-  if (isDirectListingUrl(raw) && belongs) {
+  if (trustedExact) {
     return {
       url: raw,
       exact: true,
@@ -517,32 +536,31 @@ export function listingLinkMeta(match, item = null) {
     ...match,
     title: searchQ,
     query: searchQ,
-    url: ''
-  });
+    url: '',
+    urlTrusted: false
+  }, item);
   return {
     url,
     exact: false,
-    label: url
-      ? (belongs
-        ? `Buscar ~ese precio en ${source} →`
-        : `Buscar ESTA pieza en ${source} →`)
-      : 'Sin enlace válido'
+    label: url ? `Buscar esta pieza en ${source} →` : 'Sin enlace válido'
   };
 }
 
 /**
  * URL para abrir el producto en su tienda.
- * Si hay enlace de anuncio real, se usa; si no, búsqueda del título (± rango de precio).
- * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number, category?: string, series?: string }} match
+ * Anuncio directo solo si urlTrusted; si no, búsqueda del título (± rango de precio).
+ * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number, category?: string, series?: string, urlTrusted?: boolean }} match
  * @param {object|null} [item]
  */
 export function storeLinkForMatch(match, item = null) {
   const direct = normalizeMarketUrl(match?.url);
-  if (isDirectListingUrl(direct) && matchBelongsToItem(match, item)) return direct;
+  if (match?.urlTrusted && isPlausibleListingUrl(direct) && matchBelongsToItem(match, item)) {
+    return direct;
+  }
 
   const title = preferredSearchQuery(item, match) || cleanMarketSearchQuery(match);
   if (!title) {
-    return isOpenableStoreUrl(direct) ? direct : '';
+    return isOpenableStoreUrl(direct) && !isDirectListingUrl(direct) ? direct : '';
   }
   const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
   const tcg = isTcgCardItem({
@@ -574,7 +592,7 @@ export function storeLinkForMatch(match, item = null) {
     url = withPriceBand(url, id, price);
   }
   if (url) return url;
-  return isOpenableStoreUrl(direct) ? direct : '';
+  return isOpenableStoreUrl(direct) && !isDirectListingUrl(direct) ? direct : '';
 }
 
 /**

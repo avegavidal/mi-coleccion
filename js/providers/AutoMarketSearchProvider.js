@@ -6,7 +6,7 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, matchBelongsToItem, normalizeMarketUrl } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, isPlausibleListingUrl, matchBelongsToItem, normalizeMarketUrl } from './EbayLinkProvider.js';
 
 function readGeminiApiKey() {
   try {
@@ -325,7 +325,9 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     if (!live) return;
     const fromListings = (live.listings || []).map((l, i) => {
       const url = l.url || '';
-      const exact = isDirectListingUrl(url);
+      const exact = isPlausibleListingUrl(url);
+      const searchFallback = live.searchUrl
+        || (kind === 'sold' ? ebayMarketUrls(q).sold : ebayMarketUrls(q).active);
       return {
         id: `ebay-${kind}-${attempt}-${q}-${i}-${l.price}`,
         title: l.title || q,
@@ -334,7 +336,8 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         source: 'ebay',
         priceType: kind === 'sold' ? 'sold' : 'listing',
         linkExact: exact,
-        url: url || live.searchUrl || (kind === 'sold' ? ebayMarketUrls(q).sold : ebayMarketUrls(q).active),
+        urlTrusted: exact,
+        url: exact ? url : searchFallback,
         query: q,
         note: exact
           ? (kind === 'sold' ? 'Anuncio eBay (vendido)' : 'Anuncio eBay (en venta)')
@@ -725,21 +728,27 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
     const source = String(m.source || 'web');
     const rawUrl = typeof m.url === 'string' ? m.url.trim() : '';
     const normUrl = normalizeMarketUrl(rawUrl);
-    const exact = isDirectListingUrl(normUrl);
+    void normUrl; // Gemini URLs no se abren (404); solo informativo
     let priceType = String(m.priceType || inferPriceType(m)).toLowerCase();
-    // Sin URL de anuncio: mantener listing en tiendas conocidas (la UI marca Orientativo).
-    // Solo forzar estimate si la fuente es desconocida o el modelo lo dijo.
-    if (!exact && priceType === 'listing') {
-      if (!/ebay|amazon|mercari|amiami|yahoo|mandarake|tcgplayer|cardmarket/i.test(source)) {
-        priceType = 'estimate';
-      }
+    if (priceType === 'listing') {
+      // Sin anuncio verificado, el precio es orientativo
+      priceType = 'estimate';
     }
     const noteBase = m.note
       ? String(m.note)
       : (priceType === 'market'
         ? 'TCGPlayer Market Price'
-        : (exact ? 'Anuncio web' : 'Precio orientativo (sin link de anuncio exacto)'));
+        : 'Precio orientativo — el enlace busca esta pieza en la tienda');
     const searchTitle = sanitizeMatchTitle(title);
+    // Nunca usar /itm/ inventados por Gemini (dan Not Found). Siempre búsqueda real.
+    const openUrl = storeLinkForMatch({
+      source,
+      title: searchTitle || title,
+      url: '',
+      query: searchHint,
+      price,
+      urlTrusted: false
+    });
     out.push({
       id: `gem-${i}-${price}-${title.slice(0, 24)}`,
       title: searchTitle || title,
@@ -747,10 +756,9 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
       currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
       source,
       priceType,
-      url: exact
-        ? normUrl
-        : storeLinkForMatch({ source, title: searchTitle || title, url: '', query: searchHint, price }),
-      linkExact: exact,
+      url: openUrl,
+      linkExact: false,
+      urlTrusted: false,
       query: searchHint,
       note: noteBase
     });
