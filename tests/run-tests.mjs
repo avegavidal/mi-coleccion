@@ -568,17 +568,45 @@ test('CSS barra de búsqueda de mercado existe', () => {
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
 
-await testAsync('geminiClient no usa modelos 1.5 retireados', async () => {
+await testAsync('geminiClient prioriza 2.5 Flash (visión) y no usa 1.5', async () => {
   const gc = await import(pathToFileURL(join(root, 'js/services/geminiClient.js')).href);
   const models = await gc.resolveGeminiModels('');
   assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
-  assert(models.includes('gemini-2.0-flash'));
+  assert(models[0] === 'gemini-2.5-flash', models.join(','));
+  assert(models.includes('gemini-2.5-flash'));
+  const vision = await gc.resolveGeminiModels('', { purpose: 'vision' });
+  assert(vision[0] === 'gemini-2.5-flash', vision.join(','));
+  assert(Array.isArray(gc.VISION_PREFERRED_MODELS) && gc.VISION_PREFERRED_MODELS[0] === 'gemini-2.5-flash');
+  const grounded = gc.assignGroundingUrlsToMatches(
+    [{ title: 'Nemu', price: 28, source: 'ebay', url: 'https://ebay.com/sch/i.html?_nkw=x', linkExact: false }],
+    ['https://www.ebay.com/itm/1234567890', 'https://www.amiami.com/eng/detail/?gcode=FIGURE-123']
+  );
+  assert(grounded[0].linkExact === true, JSON.stringify(grounded[0]));
+  assert(/\/itm\//.test(grounded[0].url));
+  assert(gc.extractGroundingUrls({
+    candidates: [{
+      groundingMetadata: {
+        groundingChunks: [{ web: { uri: 'https://www.ebay.com/itm/999' } }]
+      }
+    }]
+  }).includes('https://www.ebay.com/itm/999'));
   assert(/429|Cuota|free/i.test(gc.formatGeminiHttpError(429, 'RESOURCE_EXHAUSTED')));
   assert(/free|0/i.test(gc.formatGeminiHttpError(429, 'generate_content_free_tier_requests limit: 0')));
   assert(typeof gc.sleep === 'function');
   const t0 = Date.now();
   await gc.sleep(20);
   assert(Date.now() - t0 >= 15);
+});
+
+await testAsync('extractEbayListings captura /itm/ cuando existe', async () => {
+  const ebay = await import(pathToFileURL(join(root, 'js/providers/EbayActiveProvider.js')).href);
+  const html2 = `href="https://www.ebay.com/itm/123456789012" class="s-item__link">
+    <div class="s-item__title"><span>BLEACH Glitter Figure Banpresto</span></div>
+    <span class="s-item__price">$29.99</span>`;
+  const listings = ebay.extractEbayListings(html2, 4);
+  assert(listings.length >= 1, JSON.stringify(listings));
+  assert(listings[0].url.includes('/itm/'), listings[0].url);
+  assert(listings[0].price === 29.99);
 });
 
 test('identityWeak detecta OCR flojo vs identidad sólida', () => {
@@ -753,10 +781,15 @@ test('búsqueda paralela foto+texto y progreso parcial', () => {
   assert(/onMatches/.test(src));
   assert(/emitPartial/.test(src));
   assert(/foto \+ texto en paralelo/.test(src));
+  assert(/sold:\s*true/.test(src));
+  assert(/gemini-2\.5-flash/.test(src));
   const idSrc = readFileSync(join(root, 'js/screens/identify.js'), 'utf8');
   assert(/onMatches:\s*\(partial\)/.test(idSrc));
   const colSrc = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
   assert(/onMatches:\s*\(partial\)/.test(colSrc));
+  const visionSrc = readFileSync(join(root, 'js/services/visionIdentifyService.js'), 'utf8');
+  assert(/purpose:\s*'vision'/.test(visionSrc));
+  assert(/gemini-2\.5-flash/.test(visionSrc));
 });
 
 test('collection usa lookupMarketPrice automático', () => {

@@ -15,14 +15,16 @@ export class EbayActiveProvider extends MarketPriceProvider {
   }
 
   /**
-   * @param {{ query: string, limit?: number }} opts
+   * @param {{ query: string, limit?: number, sold?: boolean }} opts
    */
   async lookup(opts) {
     const query = (opts.query || '').trim();
     if (!query) throw new Error('Falta el nombre para buscar en eBay');
 
     const urls = ebayMarketUrls(query);
-    const searchUrl = urls.active;
+    const sold = Boolean(opts.sold);
+    const searchUrl = sold ? urls.sold : urls.active;
+    if (!searchUrl) throw new Error(sold ? 'Sin URL eBay vendidos' : 'Sin URL eBay activos');
     const html = await fetchHtmlViaProxy(searchUrl);
     const prices = extractEbayPrices(html);
     const stats = summarize(prices);
@@ -30,7 +32,7 @@ export class EbayActiveProvider extends MarketPriceProvider {
 
     return {
       source: this.id,
-      label: this.label,
+      label: sold ? 'eBay US (vendidos)' : this.label,
       currency: 'USD',
       sampleSize: stats.count,
       low: stats.low,
@@ -40,7 +42,9 @@ export class EbayActiveProvider extends MarketPriceProvider {
       searchUrl,
       soldUrl: urls.sold,
       note: stats.count
-        ? `Mediana de ${stats.count} anuncios Buy It Now en eBay US.`
+        ? (sold
+          ? `Mediana de ${stats.count} precios vendidos en eBay US.`
+          : `Mediana de ${stats.count} anuncios Buy It Now en eBay US.`)
         : 'No se pudieron leer precios desde eBay automáticamente.'
     };
   }
@@ -149,17 +153,38 @@ export function extractEbayPrices(html) {
 export function extractEbayListings(html, limit = 8) {
   if (!html) return [];
   const out = [];
-  const blockRe = /s-item__title[^>]*>[\s\S]*?<span[^>]*>([^<]{8,180})<\/span>[\s\S]*?s-item__price[^>]*>\s*(?:<!--.*?-->\s*)*(?:US\s*)?\$?\s*([0-9,]+\.?[0-9]*)/gi;
+  const seen = new Set();
+
+  // Preferir bloques con enlace /itm/ (anuncio real)
+  const itmBlock = /href="(https?:\/\/(?:www\.)?ebay\.com\/itm\/[^"?#]+)"[\s\S]{0,900}?s-item__price[^>]*>\s*(?:<!--.*?-->\s*)*(?:US\s*)?\$?\s*([0-9,]+\.?[0-9]*)/gi;
   let m;
+  while ((m = itmBlock.exec(html)) !== null && out.length < limit) {
+    const url = m[1].replace(/&amp;/g, '&');
+    const price = parseMoney(m[2]);
+    if (price == null || seen.has(url)) continue;
+    seen.add(url);
+    // título cercano (antes del price)
+    const slice = html.slice(Math.max(0, m.index - 200), m.index + 200);
+    const titleM = /s-item__title[^>]*>[\s\S]*?<span[^>]*>([^<]{8,180})<\/span>/i.exec(slice)
+      || />([A-Za-z0-9][^<]{12,120})</.exec(slice);
+    const title = (titleM?.[1] || 'eBay listing').replace(/\s+/g, ' ').trim();
+    if (/shop on ebay/i.test(title)) continue;
+    out.push({ title: title.slice(0, 160), price, currency: 'USD', url });
+  }
+
+  const blockRe = /s-item__title[^>]*>[\s\S]*?<span[^>]*>([^<]{8,180})<\/span>[\s\S]*?s-item__price[^>]*>\s*(?:<!--.*?-->\s*)*(?:US\s*)?\$?\s*([0-9,]+\.?[0-9]*)/gi;
   while ((m = blockRe.exec(html)) !== null && out.length < limit) {
     const title = m[1].replace(/\s+/g, ' ').trim();
     if (/shop on ebay/i.test(title)) continue;
     const price = parseMoney(m[2]);
     if (price == null) continue;
+    const key = `${title}|${price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ title, price, currency: 'USD', url: '', condition: undefined });
   }
 
-  // Fallback markdown/jina: Title .... $12.99
+  // Fallback markdown/jina: Title .... $12.99  (+ /itm/ si aparece)
   if (out.length < 2) {
     const mdRe = /(?:^|\n)\s*(?:#{1,3}\s*)?([A-Za-z0-9][^$\n]{10,120}?)\s+\$([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/g;
     while ((m = mdRe.exec(html)) !== null && out.length < limit) {
@@ -167,7 +192,14 @@ export function extractEbayListings(html, limit = 8) {
       if (/ebay|results|filter|shipping/i.test(title) && title.length < 20) continue;
       const price = parseMoney(m[2]);
       if (price == null || price < 5) continue;
-      out.push({ title: title.slice(0, 160), price, currency: 'USD', url: '' });
+      const around = html.slice(m.index, m.index + 220);
+      const itm = /(https?:\/\/(?:www\.)?ebay\.com\/itm\/[^\s)"']+)/i.exec(around);
+      out.push({
+        title: title.slice(0, 160),
+        price,
+        currency: 'USD',
+        url: itm ? itm[1] : ''
+      });
     }
   }
   return out;

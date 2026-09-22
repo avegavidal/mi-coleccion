@@ -164,7 +164,9 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   const maxAttempts = opts.maxAttempts ?? (apiKey ? (preferPhoto ? 5 : 4) : 2);
 
   const { resolveGeminiModels } = await import('../services/geminiClient.js');
-  let modelList = apiKey ? await resolveGeminiModels(apiKey, { forceRefresh: false }) : [];
+  let modelList = apiKey
+    ? await resolveGeminiModels(apiKey, { forceRefresh: false, purpose: hasPhoto ? 'vision' : 'price' })
+    : [];
   let modelCursor = 0;
   let photoGeminiOk = false;
   let lastEmittedCount = -1;
@@ -261,13 +263,13 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
   async function runGeminiPass(attempt) {
     if (!apiKey) return;
-    const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.0-flash';
+    const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.5-flash';
     modelCursor += 1;
     onProgress({
       stage: 'gemini',
       attempt,
       message: hasPhoto
-        ? `Foto + IA (${preferModel}) en paralelo…`
+        ? `Foto + IA 2.5 (${preferModel}) en paralelo…`
         : `IA (${preferModel}) + texto — intento ${attempt}…`
     });
     try {
@@ -280,7 +282,8 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         preferModel,
         models: modelList,
         signal,
-        photoFirst: preferPhoto || hasPhoto
+        photoFirst: preferPhoto || hasPhoto,
+        purpose: hasPhoto ? 'vision' : 'price'
       });
       if (geminiMatches._imageAttached) photoGeminiOk = true;
       matches = mergeMatches(matches, geminiMatches);
@@ -290,7 +293,7 @@ export async function autoSearchMarketMatches(item, opts = {}) {
         const q2 = buildSearchQueries(enriched);
         if (q2.length) queries = q2;
       }
-      emitPartial('foto / IA');
+      emitPartial(hasPhoto ? 'foto / Gemini 2.5' : 'Gemini');
     } catch (err) {
       if (err.name === 'AbortError') {
         if (signal?.aborted) throw err;
@@ -305,7 +308,10 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       });
       if (/429|cuota|free:|quota/i.test(err.message)) {
         try {
-          modelList = await resolveGeminiModels(apiKey, { forceRefresh: true });
+          modelList = await resolveGeminiModels(apiKey, {
+            forceRefresh: true,
+            purpose: hasPhoto ? 'vision' : 'price'
+          });
         } catch {
           // keep
         }
@@ -315,62 +321,81 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     }
   }
 
+  async function ingestEbayLive(live, q, attempt, kind) {
+    if (!live) return;
+    const fromListings = (live.listings || []).map((l, i) => {
+      const url = l.url || '';
+      const exact = isDirectListingUrl(url);
+      return {
+        id: `ebay-${kind}-${attempt}-${q}-${i}-${l.price}`,
+        title: l.title || q,
+        price: Number(l.price),
+        currency: live.currency || 'USD',
+        source: 'ebay',
+        priceType: kind === 'sold' ? 'sold' : 'listing',
+        linkExact: exact,
+        url: url || live.searchUrl || (kind === 'sold' ? ebayMarketUrls(q).sold : ebayMarketUrls(q).active),
+        query: q,
+        note: exact
+          ? (kind === 'sold' ? 'Anuncio eBay (vendido)' : 'Anuncio eBay (en venta)')
+          : (kind === 'sold' ? 'eBay vendidos' : 'Listado eBay')
+      };
+    });
+    if (fromListings.length) {
+      matches = mergeMatches(matches, fromListings);
+      matches = scoreAndSortMatches(matches, item);
+      emitPartial(kind === 'sold' ? 'eBay vendidos' : 'eBay');
+      return;
+    }
+    if (live.median == null) return;
+    const synth = [];
+    const prefix = kind === 'sold' ? 'eBay vendido' : 'eBay';
+    for (const [label, price] of [[`${prefix} bajo`, live.low], [`${prefix} típico`, live.median], [`${prefix} alto`, live.high]]) {
+      if (price == null) continue;
+      synth.push({
+        id: `ebay-stat-${kind}-${attempt}-${q}-${label}-${price}`,
+        title: `${label}: ${q}`,
+        price: Number(price),
+        currency: 'USD',
+        source: 'ebay',
+        priceType: 'estimate',
+        linkExact: false,
+        url: live.searchUrl,
+        query: q,
+        note: live.note || `Resumen orientativo eBay (${kind})`
+      });
+    }
+    matches = mergeMatches(matches, synth);
+    matches = scoreAndSortMatches(matches, item);
+    emitPartial(kind === 'sold' ? 'eBay vendidos' : 'eBay');
+  }
+
   async function runEbayPass(attempt) {
     if (!queries.length) return;
-    onProgress({ stage: 'ebay', attempt, message: `Texto / eBay (intento ${attempt})…` });
+    onProgress({ stage: 'ebay', attempt, message: `Texto / eBay activo+vendidos (intento ${attempt})…` });
     const provider = new EbayActiveProvider();
     const qLimit = attempt === 1 ? 2 : 3;
     for (const q of queries.slice(0, qLimit)) {
       if (shouldStopMarketSearch(matches, item, attempt) && matches.length >= 2) break;
       if (signal?.aborted) break;
-      try {
-        const live = await Promise.race([
-          provider.lookup({ query: q, limit: 8 }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 10000))
-        ]);
-        const fromListings = (live.listings || []).map((l, i) => {
-          const url = l.url || '';
-          const exact = isDirectListingUrl(url);
-          return {
-            id: `ebay-${attempt}-${q}-${i}-${l.price}`,
-            title: l.title || q,
-            price: Number(l.price),
-            currency: live.currency || 'USD',
-            source: 'ebay',
-            priceType: 'listing',
-            linkExact: exact,
-            url: url || live.searchUrl || ebayMarketUrls(q).active,
-            query: q,
-            note: exact ? 'Anuncio eBay (en venta)' : 'Listado eBay'
-          };
-        });
-        if (fromListings.length) {
-          matches = mergeMatches(matches, fromListings);
-          matches = scoreAndSortMatches(matches, item);
-          emitPartial('eBay');
-        } else if (live.median != null) {
-          const synth = [];
-          for (const [label, price] of [['eBay bajo', live.low], ['eBay típico', live.median], ['eBay alto', live.high]]) {
-            if (price == null) continue;
-            synth.push({
-              id: `ebay-stat-${attempt}-${q}-${label}-${price}`,
-              title: `${label}: ${q}`,
-              price: Number(price),
-              currency: 'USD',
-              source: 'ebay',
-              priceType: 'estimate',
-              linkExact: false,
-              url: live.searchUrl,
-              query: q,
-              note: live.note || 'Resumen orientativo de precios eBay'
-            });
-          }
-          matches = mergeMatches(matches, synth);
-          matches = scoreAndSortMatches(matches, item);
-          emitPartial('eBay');
-        }
-      } catch (err) {
-        errors.push(`eBay “${q}”: ${err.message}`);
+      const timed = (p) => Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout eBay')), 10000))
+      ]);
+      // Activo + vendidos en paralelo (mejor mediana de mercado real)
+      const settled = await Promise.allSettled([
+        timed(provider.lookup({ query: q, limit: 8 })),
+        timed(provider.lookup({ query: q, limit: 8, sold: true }))
+      ]);
+      if (settled[0].status === 'fulfilled') {
+        await ingestEbayLive(settled[0].value, q, attempt, 'active');
+      } else {
+        errors.push(`eBay activo “${q}”: ${settled[0].reason?.message || settled[0].reason}`);
+      }
+      if (settled[1].status === 'fulfilled') {
+        await ingestEbayLive(settled[1].value, q, attempt, 'sold');
+      } else {
+        errors.push(`eBay vendidos “${q}”: ${settled[1].reason?.message || settled[1].reason}`);
       }
     }
   }
@@ -521,7 +546,7 @@ function soften(name) {
 
 /**
  * @param {object} item
- * @param {{ apiKey: string, imageUrl?: string|null, imageBlob?: Blob|File|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal, photoFirst?: boolean }} opts
+ * @param {{ apiKey: string, imageUrl?: string|null, imageBlob?: Blob|File|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal, photoFirst?: boolean, purpose?: 'vision'|'price'|'general' }} opts
  * @returns {Promise<MarketMatch[]>}
  */
 export async function searchMarketWithGemini(item, opts) {
@@ -544,8 +569,9 @@ export async function searchMarketWithGemini(item, opts) {
     ? `CRITICAL — PHOTO FIRST:
 - A product PHOTO is attached. Identify the EXACT product from the image (box text, logos, character, line like Glitter & Glamours / Nendoroid / G×materia).
 - Ignore weak/empty Item data if it conflicts with what you see on the box.
-- Then search LIVE web for that product's current prices.
-- Put the official product title in each match "title".`
+- Then search LIVE web for that product's current BUY / FOR SALE prices on eBay, AmiAmi, Mercari, Amazon, Yahoo JP.
+- Put the official product title in each match "title".
+- Prefer URLs that are real listing pages (ebay.com/itm/…, amiami detail, mercari/item).`
     : '';
 
   const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'ANIME FIGURE / prize figure specialist'}).
@@ -616,12 +642,17 @@ ${tcg
   const {
     geminiGenerateContent,
     geminiTextFromResponse,
-    formatGeminiHttpError
+    formatGeminiHttpError,
+    extractGroundingUrls,
+    assignGroundingUrlsToMatches
   } = await import('../services/geminiClient.js');
 
   const bodyPlain = {
     contents: [{ parts }],
-    generationConfig: { temperature: 0.1 }
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json'
+    }
   };
   const bodyWithTools = {
     contents: [{ parts }],
@@ -629,17 +660,25 @@ ${tcg
     generationConfig: { temperature: 0.1 }
   };
 
+  const genOpts = {
+    signal: opts.signal,
+    models: opts.models,
+    preferModel: opts.preferModel,
+    purpose: opts.purpose || (photoFirst ? 'vision' : 'price')
+  };
+
   // Preferir grounding web primero: mejores URLs reales de anuncios.
   let lastErr = '';
   try {
-    const out = await geminiGenerateContent(apiKey, bodyWithTools, {
-      signal: opts.signal,
-      models: opts.models,
-      preferModel: opts.preferModel
-    });
+    const out = await geminiGenerateContent(apiKey, bodyWithTools, genOpts);
     const text = geminiTextFromResponse(out.data);
-    const parsed = parseGeminiMarketMatches(text, searchHint);
+    let parsed = parseGeminiMarketMatches(text, searchHint);
+    const grounded = extractGroundingUrls(out.data);
+    if (grounded.length) {
+      parsed = assignGroundingUrlsToMatches(parsed, grounded);
+    }
     parsed._imageAttached = imageAttached;
+    parsed._model = out.model;
     if (parsed.length) return parsed;
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -651,14 +690,11 @@ ${tcg
   }
 
   try {
-    const out = await geminiGenerateContent(apiKey, bodyPlain, {
-      signal: opts.signal,
-      models: opts.models,
-      preferModel: opts.preferModel
-    });
+    const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
     const text = geminiTextFromResponse(out.data);
     const parsed = parseGeminiMarketMatches(text, searchHint);
     parsed._imageAttached = imageAttached;
+    parsed._model = out.model;
     return parsed;
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -833,6 +869,7 @@ export function scoreAndSortMatches(matches, item) {
       }
       if (m.linkExact || isDirectListingUrl(m.url)) score += 4;
       if (m.priceType === 'estimate') score -= 1;
+      if (m.priceType === 'sold') score += 1; // vendidos ≈ precio real de mercado
       if (src === 'web-snippet') score -= 6;
       if (isTcgMarketPriceMatch(m)) score += 6;
       else if (src === 'tcgplayer') score += tcgItem ? 3 : -8;

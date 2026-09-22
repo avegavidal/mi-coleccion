@@ -1,35 +1,54 @@
 /**
  * Cliente Gemini compartido: modelos actuales (sin 1.5) y manejo de cuota.
  *
- * En nivel gratuito, un 429 con dashboard vacío suele ser “limit: 0” en un modelo
- * concreto (p. ej. 2.5-flash), no uso acumulado. Rotamos modelos y reintentamos.
+ * gemini-2.0-flash está apagado en AI Studio; priorizamos 2.5 Flash (mejor
+ * visión + grounding) y rotamos a lite/pro si hay 429 en free tier.
  */
 
-/** Orden: free-friendly primero, luego más nuevos. */
+/** Orden general: mejor calidad/precio primero, luego fallbacks free-friendly. */
 export const PREFERRED_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
-  'gemini-2.5-flash-lite',
-  'gemini-flash-latest',
-  'gemini-2.5-flash',
   'gemini-2.0-flash-001'
 ];
 
-/** @type {Map<string, { at: number, models: string[] }>} */
+/**
+ * Visión / foto: 2.5 Flash es el sweet spot (rápido + entiende cajas).
+ * Pro solo si Flash falla o cuota 0.
+ */
+export const VISION_PREFERRED_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash'
+];
+
+/** @type {Map<string, { at: number, models: string[], purpose: string }>} */
 const listCache = new Map();
 const LIST_TTL_MS = 15 * 60 * 1000;
 
 /**
  * @param {string} apiKey
- * @param {{ forceRefresh?: boolean, max?: number }} [opts]
+ * @param {{ forceRefresh?: boolean, max?: number, purpose?: 'general'|'vision'|'price' }} [opts]
  * @returns {Promise<string[]>}
  */
 export async function resolveGeminiModels(apiKey, opts = {}) {
-  const max = opts.max ?? PREFERRED_MODELS.length;
-  if (!apiKey) return PREFERRED_MODELS.slice(0, max);
+  const max = opts.max ?? 8;
+  const purpose = opts.purpose || 'general';
+  const preferred = purpose === 'vision' || purpose === 'price'
+    ? VISION_PREFERRED_MODELS
+    : PREFERRED_MODELS;
 
+  if (!apiKey) return preferred.slice(0, max);
+
+  const cacheKey = `${apiKey}::${purpose}`;
   if (!opts.forceRefresh) {
-    const cached = listCache.get(apiKey);
+    const cached = listCache.get(cacheKey);
     if (cached && Date.now() - cached.at < LIST_TTL_MS && cached.models.length) {
       return cached.models.slice(0, max);
     }
@@ -44,15 +63,19 @@ export async function resolveGeminiModels(apiKey, opts = {}) {
       const available = (data.models || [])
         .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
         .map((m) => String(m.name || '').replace(/^models\//, ''))
-        .filter((id) => id && !/1\.5|embedding|tts|audio|image-preview|robotics/i.test(id));
+        .filter((id) => id && !/1\.5|embedding|tts|audio|image-preview|robotics|imagen/i.test(id));
 
-      const preferred = PREFERRED_MODELS.filter((id) => available.includes(id));
+      const preferredHit = preferred.filter((id) => available.includes(id));
       const flashExtras = available.filter((id) =>
-        /flash/i.test(id) && !preferred.includes(id)
+        /flash/i.test(id) && !preferredHit.includes(id) && !/image|tts|audio|live/i.test(id)
       );
-      const models = [...preferred, ...flashExtras];
+      const proExtras = available.filter((id) =>
+        /pro/i.test(id) && !preferredHit.includes(id) && !flashExtras.includes(id)
+        && !/image|tts|audio|live/i.test(id)
+      );
+      const models = [...preferredHit, ...flashExtras, ...proExtras];
       if (models.length) {
-        listCache.set(apiKey, { at: Date.now(), models });
+        listCache.set(cacheKey, { at: Date.now(), models, purpose });
         return models.slice(0, max);
       }
     }
@@ -60,8 +83,8 @@ export async function resolveGeminiModels(apiKey, opts = {}) {
     // fallback estático
   }
 
-  const fallback = [...PREFERRED_MODELS];
-  listCache.set(apiKey, { at: Date.now(), models: fallback });
+  const fallback = [...preferred];
+  listCache.set(cacheKey, { at: Date.now(), models: fallback, purpose });
   return fallback.slice(0, max);
 }
 
@@ -113,12 +136,12 @@ export function sleep(ms, signal) {
 /**
  * @param {string} apiKey
  * @param {object} body
- * @param {{ signal?: AbortSignal, models?: string[], preferModel?: string }} [opts]
+ * @param {{ signal?: AbortSignal, models?: string[], preferModel?: string, purpose?: 'general'|'vision'|'price' }} [opts]
  */
 export async function geminiGenerateContent(apiKey, body, opts = {}) {
   let models = opts.models?.length
     ? opts.models
-    : await resolveGeminiModels(apiKey);
+    : await resolveGeminiModels(apiKey, { purpose: opts.purpose || 'general' });
 
   if (opts.preferModel) {
     models = [opts.preferModel, ...models.filter((m) => m !== opts.preferModel)];
@@ -168,7 +191,9 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
 
   if (sawQuota) {
     // Refrescar lista por si hay modelos nuevos
-    listCache.delete(apiKey);
+    for (const key of [...listCache.keys()]) {
+      if (key.startsWith(`${apiKey}::`) || key === apiKey) listCache.delete(key);
+    }
     throw new Error(formatGeminiHttpError(429, lastErr));
   }
 
@@ -180,4 +205,80 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
 
 export function geminiTextFromResponse(data) {
   return data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('\n') || '';
+}
+
+/**
+ * URLs reales citadas por Google Search grounding (mejores que inventadas).
+ * @param {object} data
+ * @returns {string[]}
+ */
+export function extractGroundingUrls(data) {
+  const out = [];
+  const seen = new Set();
+  const push = (u) => {
+    const url = String(u || '').trim();
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    out.push(url);
+  };
+
+  const cand = data?.candidates?.[0];
+  const meta = cand?.groundingMetadata || data?.groundingMetadata || {};
+  for (const chunk of meta.groundingChunks || []) {
+    push(chunk?.web?.uri || chunk?.web?.url);
+  }
+  for (const support of meta.groundingSupports || []) {
+    for (const idx of support?.groundingChunkIndices || []) {
+      const chunk = (meta.groundingChunks || [])[idx];
+      push(chunk?.web?.uri || chunk?.web?.url);
+    }
+  }
+  // Algunos responses incluyen searchEntryPoint / citations
+  for (const cite of cand?.citationMetadata?.citationSources || []) {
+    push(cite?.uri || cite?.url);
+  }
+  return out;
+}
+
+/**
+ * Asigna URLs de grounding a matches sin link de anuncio exacto.
+ * @param {Array<{source?:string,url?:string,linkExact?:boolean,title?:string}>} matches
+ * @param {string[]} groundingUrls
+ */
+export function assignGroundingUrlsToMatches(matches, groundingUrls) {
+  const urls = groundingUrls || [];
+  if (!matches?.length || !urls.length) return matches || [];
+
+  const byStore = {
+    ebay: urls.filter((u) => /ebay\./i.test(u)),
+    amazon: urls.filter((u) => /amazon\./i.test(u)),
+    mercari: urls.filter((u) => /mercari\./i.test(u)),
+    amiami: urls.filter((u) => /amiami\./i.test(u)),
+    yahoo: urls.filter((u) => /yahoo\.|auctions\.yahoo/i.test(u)),
+    tcgplayer: urls.filter((u) => /tcgplayer\./i.test(u)),
+    cardmarket: urls.filter((u) => /cardmarket\./i.test(u)),
+    pricecharting: urls.filter((u) => /pricecharting\./i.test(u)),
+    mandarake: urls.filter((u) => /mandarake\./i.test(u))
+  };
+
+  const used = new Set();
+  return matches.map((m) => {
+    if (m.linkExact && m.url) return m;
+    const src = String(m.source || '').toLowerCase();
+    const pool = byStore[src] || urls;
+    const pick = pool.find((u) => !used.has(u)) || urls.find((u) => !used.has(u));
+    if (!pick) return m;
+    used.add(pick);
+    const exact = /\/itm\/|\/dp\/|\/gp\/product\/|\/item\/|\/product\/|detail\.php|\/detail\//i.test(pick)
+      && !/\/sch\/|\/s\?k=|\/search\//i.test(pick);
+    return {
+      ...m,
+      url: pick,
+      linkExact: exact || Boolean(m.linkExact),
+      note: exact
+        ? (m.note || 'Anuncio (grounding)')
+        : (m.note || 'Fuente web (grounding)')
+    };
+  });
 }

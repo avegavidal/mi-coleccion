@@ -106,7 +106,15 @@ year (number or null),
 category (string or null — "Figura" for figures; "TCG" or "Carta" ONLY for trading cards),
 confidence ("high"|"medium"|"low").`;
 
-  const { geminiGenerateContent, geminiTextFromResponse } = await import('./geminiClient.js');
+  const {
+    geminiGenerateContent,
+    geminiTextFromResponse,
+    resolveGeminiModels
+  } = await import('./geminiClient.js');
+
+  const models = await resolveGeminiModels(apiKey, { purpose: 'vision' });
+  const preferModel = models[0] || 'gemini-2.5-flash';
+
   const bodyPlain = {
     contents: [{
       parts: [
@@ -114,28 +122,33 @@ confidence ("high"|"medium"|"low").`;
         { inline_data: { mime_type: mime, data: base64 } }
       ]
     }],
-    generationConfig: { temperature: 0.1 }
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json'
+    }
   };
   const bodyWithTools = {
-    ...bodyPlain,
-    tools: [{ google_search: {} }]
+    contents: bodyPlain.contents,
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature: 0.1 }
   };
 
+  const genOpts = { models, preferModel, purpose: 'vision' };
   let data;
   try {
-    const out = await geminiGenerateContent(apiKey, bodyWithTools);
+    const out = await geminiGenerateContent(apiKey, bodyWithTools, genOpts);
     data = out.data;
   } catch {
-    const out = await geminiGenerateContent(apiKey, bodyPlain);
+    const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
     data = out.data;
   }
 
   let text = geminiTextFromResponse(data);
   let parsed = parseJsonObject(text);
-  // Si grounding no dio nombre usable, reintentar sin tools
+  // Si grounding no dio nombre usable, reintentar sin tools (JSON estricto)
   if (!parsed?.name) {
     try {
-      const out = await geminiGenerateContent(apiKey, bodyPlain);
+      const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
       text = geminiTextFromResponse(out.data);
       parsed = parseJsonObject(text) || parsed;
     } catch {
