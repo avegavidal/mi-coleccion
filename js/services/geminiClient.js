@@ -247,7 +247,9 @@ export function extractGroundingUrls(data) {
  * @param {string[]} groundingUrls
  */
 export function assignGroundingUrlsToMatches(matches, groundingUrls) {
-  const urls = groundingUrls || [];
+  const urls = (groundingUrls || [])
+    .map((u) => normalizeGroundingUrl(u))
+    .filter(Boolean);
   if (!matches?.length || !urls.length) return matches || [];
 
   const byStore = {
@@ -264,21 +266,52 @@ export function assignGroundingUrlsToMatches(matches, groundingUrls) {
 
   const used = new Set();
   return matches.map((m) => {
-    if (m.linkExact && m.url) return m;
+    if (m.linkExact && m.url && isLikelyListingUrl(m.url)) return m;
     const src = String(m.source || '').toLowerCase();
-    const pool = byStore[src] || urls;
-    const pick = pool.find((u) => !used.has(u)) || urls.find((u) => !used.has(u));
-    if (!pick) return m;
+    const pool = byStore[src] || [];
+    const pick = pool.find((u) => !used.has(u));
+    if (!pick || !isLikelyListingUrl(pick)) return m;
     used.add(pick);
-    const exact = /\/itm\/|\/dp\/|\/gp\/product\/|\/item\/|\/product\/|detail\.php|\/detail\//i.test(pick)
-      && !/\/sch\/|\/s\?k=|\/search\//i.test(pick);
     return {
       ...m,
       url: pick,
-      linkExact: exact || Boolean(m.linkExact),
-      note: exact
-        ? (m.note || 'Anuncio (grounding)')
-        : (m.note || 'Fuente web (grounding)')
+      linkExact: true,
+      note: m.note || 'Anuncio (grounding)'
     };
   });
+}
+
+function normalizeGroundingUrl(url) {
+  let u = String(url || '').trim();
+  if (!u) return '';
+  u = u.replace(/^<|>$/g, '').trim();
+  if (!/^https?:\/\//i.test(u) && /^[\w.-]+\.[a-z]{2,}([/:?]|$)/i.test(u)) u = `https://${u}`;
+  if (!/^https?:\/\//i.test(u)) return '';
+  if (/vertexaisearch\.cloud\.google\.com|grounding-api-redirect/i.test(u)) return '';
+  try {
+    const parsed = new URL(u);
+    if (/google\./i.test(parsed.hostname) && (parsed.searchParams.has('url') || parsed.searchParams.has('q'))) {
+      const inner = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+      if (/^https?:\/\//i.test(inner) && !/google\./i.test(inner)) return normalizeGroundingUrl(inner);
+    }
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function isLikelyListingUrl(url) {
+  const u = normalizeGroundingUrl(url) || String(url || '');
+  if (!/^https?:\/\//i.test(u)) return false;
+  return (
+    /ebay\.[^/]+\/itm\//i.test(u)
+    || /amazon\.[^/]+\/(dp|gp\/product)\//i.test(u)
+    || /mercari\.com\/(?:us\/)?item\//i.test(u)
+    || /jp\.mercari\.com\/item\//i.test(u)
+    || /amiami\.com\/.+\/detail\//i.test(u)
+    || /tcgplayer\.com\/product\//i.test(u)
+    || /page\.auctions\.yahoo\.co\.jp\/jp\/auction\//i.test(u)
+    || /pricecharting\.com\/game\//i.test(u)
+    || /cardmarket\.com\/.+\/Products\//i.test(u)
+  );
 }

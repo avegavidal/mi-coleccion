@@ -1,7 +1,8 @@
 /**
  * Identificación visual de figuras a partir de una foto.
- * 1) Gemini (key en localStorage / config) → relleno estructurado
- * 2) OCR Tesseract (gratis) → texto de caja / etiqueta
+ * 1) Gemini visión (JSON limpio, sin tools) → título oficial
+ * 2) Gemini + Google Search si el nombre sale flojo
+ * 3) OCR Tesseract solo si no hay API key / Gemini falla
  */
 
 const GEMINI_LS_KEY = 'mi_coleccion_gemini_api_key';
@@ -49,15 +50,18 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
   const apiKey = getGeminiApiKey();
 
   if (apiKey) {
-    onProgress({ stage: 'gemini', message: 'Identificando figura con Gemini + web…' });
+    onProgress({ stage: 'gemini', message: 'Leyendo la foto con Gemini 2.5…' });
     try {
-      const gemini = await identifyWithGemini(file, apiKey);
-      if (gemini?.name) {
+      const gemini = await identifyWithGemini(file, apiKey, onProgress);
+      if (gemini?.name && !isGarbageProductName(gemini.name)) {
         return {
           ...gemini,
           source: gemini.source || 'gemini-web',
           confidence: gemini.confidence || 'high'
         };
+      }
+      if (gemini?.name) {
+        console.warn('[vision] nombre basura de Gemini, reintento/OCR', gemini.name);
       }
     } catch (err) {
       console.warn('[vision] Gemini falló, uso OCR', err);
@@ -70,41 +74,67 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
   if (!apiKey) {
     ocr.note = (ocr.note || '') + ' Tip: en Configuración guarda tu Gemini API key para mejores resultados.';
   }
+  if (ocr?.name && isGarbageProductName(ocr.name)) {
+    return {
+      ...ocr,
+      name: '',
+      confidence: 'low',
+      note: 'La foto no dio un nombre claro. Prueba recortar la caja o usa Gemini en Configuración.'
+    };
+  }
   return ocr;
+}
+
+/**
+ * Nombre ilegible / OCR basura / caracteres raros.
+ * @param {string} name
+ */
+export function isGarbageProductName(name) {
+  const s = String(name || '').trim();
+  if (s.length < 4) return true;
+  if (/\uFFFD/.test(s)) return true;
+  if (/[\uE000-\uF8FF]/.test(s)) return true;
+  if (/^(thi|the|this|that|sin nombre|unknown|n\/a|null)\b/i.test(s)) return true;
+  if ((s.match(/\b(the|thi|ths|te|th|this)\b/gi) || []).length >= 2) return true;
+
+  const letters = (s.match(/\p{L}/gu) || []).length;
+  if (letters < 4) return true;
+
+  const weird = (s.match(/[^\p{L}\p{N}\s\-&:×x.'+/]/gu) || []).length;
+  if (weird >= 3 && weird >= letters * 0.25) return true;
+
+  const words = s.split(/\s+/).filter(Boolean);
+  const junkWords = words.filter((w) => /^[^\p{L}]{1,3}$/u.test(w) || /^(thi|ths|rn|vv|il)$/i.test(w));
+  if (junkWords.length >= 2 && words.length <= 5) return true;
+
+  if (s.length < 22 && /\b\d{1,2}\b\s*$/.test(s) && /^(thi|the|this)/i.test(s)) return true;
+
+  return false;
+}
+
+/**
+ * Limpia basura de encoding / símbolos sin matar japonés ni ×.
+ * @param {string} name
+ */
+export function sanitizeProductName(name) {
+  let s = String(name || '')
+    .replace(/\uFFFD/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  s = s.replace(/[^\p{L}\p{N}\s\-&:×x.'+/]/gu, ' ').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s*&\s*/g, ' & ').replace(/\s+/g, ' ').trim();
+  return s.slice(0, 140);
 }
 
 /**
  * @param {Blob|File} file
  * @param {string} apiKey
+ * @param {(p:{stage:string,message:string})=>void} [onProgress]
  */
-async function identifyWithGemini(file, apiKey) {
+async function identifyWithGemini(file, apiKey, onProgress = () => {}) {
   const base64 = await blobToBase64(file);
   const mime = file.type || 'image/jpeg';
-  const prompt = `You identify collectibles from a photo using LIVE web search when possible.
-Products: anime/game FIGURES (Banpresto, Good Smile, Bandai Spirits, Kotobukiya…) OR trading cards (Pokemon TCG, MTG, Yu-Gi-Oh…).
-
-CRITICAL — product type:
-- A BOX or packaging that says "figure", "large scale figure", Banpresto, Ban Dai Spirits, Glitter & Glamours, G×materia, Nendoroid, figma, Ichibansho, Pop Up Parade → it is a FIGURE, never a trading card.
-- Flat cardboard BOX of a figure is still a figure (not a TCG card).
-- Only use category "TCG" / "Carta" for actual trading cards (holo card front, set symbol, collector number like 25/198).
-
-CRITICAL — title:
-- Prefer the OFFICIAL retail product title (Bandai, Good Smile, Banpresto, etc.), not OCR noise from the box.
-- Good examples: "BLEACH Glitter & Glamours Nemu Kurotsuchi", "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
-- Bad examples (never invent these): "Thi The Vegeta 14", random partial box text.
-- Include the line/series when known (Glitter & Glamours, G×materia, Ichibansho, Nendoroid, figma, S.H.Figuarts…).
-- Search retailers / listings if unsure.
-
-Return ONLY valid JSON (no markdown) with keys:
-name (string, official searchable product title),
-manufacturer (string or null),
-franchise (string or null),
-series (string or null, e.g. Glitter & Glamours / G×materia / Nendoroid / Scarlet & Violet),
-character_name (string or null),
-item_number (string or null),
-year (number or null),
-category (string or null — "Figura" for figures; "TCG" or "Carta" ONLY for trading cards),
-confidence ("high"|"medium"|"low").`;
 
   const {
     geminiGenerateContent,
@@ -114,54 +144,125 @@ confidence ("high"|"medium"|"low").`;
 
   const models = await resolveGeminiModels(apiKey, { purpose: 'vision' });
   const preferModel = models[0] || 'gemini-2.5-flash';
-
-  const bodyPlain = {
-    contents: [{
-      parts: [
-        { text: prompt },
-        { inline_data: { mime_type: mime, data: base64 } }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0.1,
-      responseMimeType: 'application/json'
-    }
-  };
-  const bodyWithTools = {
-    contents: bodyPlain.contents,
-    tools: [{ google_search: {} }],
-    generationConfig: { temperature: 0.1 }
-  };
-
   const genOpts = { models, preferModel, purpose: 'vision' };
-  let data;
+
+  const visionPrompt = `You are looking at ONE photo of a collectible (anime figure box or trading card).
+
+Task: read the box/card and return the OFFICIAL retail product title in clear Latin letters when the product is sold that way internationally (AmiAmi / eBay / Bandai English name).
+
+CRITICAL:
+- Output a CLEAN human-readable title. No OCR garbage, no random fragments, no "Thi The…", no replacement characters (�).
+- FIGURE boxes (Banpresto, Glitter & Glamours, G×materia, Nendoroid, figma, Ichibansho, Pop Up Parade) → category "Figura". Never call them TCG.
+- Prefer: Franchise + line + character, e.g. "BLEACH Glitter & Glamours Nemu Kurotsuchi", "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
+- If the box is Japanese, still return the common English/romaji retail title used in Western shops when known.
+- Fill series (Glitter & Glamours / G×materia / Nendoroid…), character_name, manufacturer when visible.
+- name MUST be ASCII-friendly retail title (romaji OK). Do not dump raw noisy box OCR.
+
+Return ONLY JSON with keys:
+name, manufacturer, franchise, series, character_name, item_number, year, category, confidence.`;
+
+  const webPrompt = `Using the PHOTO and live web search, find the EXACT retail listing title for this collectible.
+Return the official English/romaji product name shops use (AmiAmi, eBay, Bandai).
+Do NOT invent OCR-like fragments. No strange characters.
+Same JSON keys: name, manufacturer, franchise, series, character_name, item_number, year, category, confidence.
+FIGURE not TCG if the photo shows a figure box.`;
+
+  const imagePart = { inline_data: { mime_type: mime, data: base64 } };
+
+  // 1) Visión pura + JSON estricto (más fiable para el nombre que grounding)
+  onProgress({ stage: 'gemini', message: 'Gemini 2.5 lee la caja…' });
+  let best = null;
   try {
-    const out = await geminiGenerateContent(apiKey, bodyWithTools, genOpts);
-    data = out.data;
-  } catch {
-    const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
-    data = out.data;
+    const out = await geminiGenerateContent(apiKey, {
+      contents: [{ parts: [{ text: visionPrompt }, imagePart] }],
+      generationConfig: { temperature: 0.05, responseMimeType: 'application/json' }
+    }, genOpts);
+    best = normalizeSuggestion(parseJsonObject(geminiTextFromResponse(out.data)) || {});
+    best.source = 'gemini';
+  } catch (err) {
+    console.warn('[vision] pase visión falló', err);
   }
 
-  let text = geminiTextFromResponse(data);
-  let parsed = parseJsonObject(text);
-  // Si grounding no dio nombre usable, reintentar sin tools (JSON estricto)
-  if (!parsed?.name) {
+  // 2) Si el nombre es basura o flojo, grounding web
+  if (!best?.name || isGarbageProductName(best.name) || scoreIdentitySuggestion(best) < 40) {
+    onProgress({ stage: 'gemini', message: 'Buscando título oficial en la web…' });
     try {
-      const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
-      text = geminiTextFromResponse(out.data);
-      parsed = parseJsonObject(text) || parsed;
-    } catch {
-      // keep first
+      const out = await geminiGenerateContent(apiKey, {
+        contents: [{ parts: [{ text: webPrompt }, imagePart] }],
+        tools: [{ google_search: {} }],
+        generationConfig: { temperature: 0.1 }
+      }, genOpts);
+      const web = normalizeSuggestion(parseJsonObject(geminiTextFromResponse(out.data)) || {});
+      web.source = 'gemini-web';
+      best = preferBetterSuggestion(best, web) || web;
+    } catch (err) {
+      console.warn('[vision] pase web falló', err);
     }
   }
-  if (!parsed) throw new Error('Gemini no devolvió JSON usable');
-  const normalized = normalizeSuggestion(parsed);
-  if (!normalized.name) throw new Error('Gemini no identificó el producto');
-  return {
-    ...normalized,
-    source: 'gemini-web'
-  };
+
+  // 3) Reintento visión si web ensució el nombre
+  if (best?.name && isGarbageProductName(best.name)) {
+    try {
+      const out = await geminiGenerateContent(apiKey, {
+        contents: [{ parts: [{ text: visionPrompt }, imagePart] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+      }, genOpts);
+      const again = normalizeSuggestion(parseJsonObject(geminiTextFromResponse(out.data)) || {});
+      again.source = 'gemini';
+      best = preferBetterSuggestion(best, again) || again;
+    } catch {
+      // keep
+    }
+  }
+
+  if (!best) throw new Error('Gemini no devolvió JSON usable');
+
+  best = polishSuggestionName(best);
+  if (!best.name || isGarbageProductName(best.name)) {
+    throw new Error('Gemini no identificó un nombre limpio del producto');
+  }
+  return best;
+}
+
+/**
+ * Arma un nombre oficial a partir de franchise/series/character si hace falta.
+ * @param {object} s
+ */
+export function polishSuggestionName(s) {
+  if (!s) return s;
+  let name = sanitizeProductName(s.name || '');
+  const series = sanitizeProductName(s.series || '') || null;
+  const character = sanitizeProductName(s.character_name || '') || null;
+  const franchise = sanitizeProductName(s.franchise || '') || null;
+  const manufacturer = sanitizeProductName(s.manufacturer || '') || null;
+
+  if (isGarbageProductName(name) || name.length < 8) {
+    const composed = [franchise, series, character].filter(Boolean).join(' ').trim();
+    if (composed.length >= 8 && !isGarbageProductName(composed)) {
+      name = composed;
+    } else if (series && character) {
+      name = `${series} ${character}`.trim();
+    }
+  } else if (series && character) {
+    const seriesKey = series.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
+    const charFirst = character.toLowerCase().split(/\s+/)[0] || '';
+    if (seriesKey && !name.toLowerCase().replace(/[^a-z0-9]/g, '').includes(seriesKey)
+      && charFirst && name.toLowerCase().includes(charFirst)) {
+      const composed = [franchise, series, character].filter(Boolean).join(' ');
+      if (composed.length > name.length && !isGarbageProductName(composed)) {
+        name = composed;
+      }
+    }
+  }
+
+  return normalizeSuggestion({
+    ...s,
+    name,
+    series,
+    character_name: character,
+    franchise,
+    manufacturer
+  });
 }
 
 /**
@@ -185,7 +286,7 @@ async function identifyWithOcr(file, onProgress) {
   try {
     const { data } = await worker.recognize(file);
     const text = (data?.text || '').replace(/\r/g, '');
-    return suggestionFromOcrText(text);
+    return polishSuggestionName(suggestionFromOcrText(text));
   } finally {
     await worker.terminate().catch(() => {});
   }
@@ -198,17 +299,18 @@ export function suggestionFromOcrText(text) {
   const lines = String(text || '')
     .split('\n')
     .map((l) => l.replace(/\s+/g, ' ').trim())
-    .filter((l) => l.length >= 3);
+    .filter((l) => l.length >= 3 && !isGarbageProductName(l));
 
-  const full = lines.join(' ');
+  const full = String(text || '').replace(/\r/g, ' ');
   const manufacturer = detectBrand(full) || detectBrand(lines.join(' | '));
   const itemNumber = detectItemNumber(full);
   const series = detectSeries(full);
 
   const nameLine = pickNameLine(lines, manufacturer) || lines[0] || '';
-  const name = cleanName(nameLine, manufacturer);
+  let name = sanitizeProductName(cleanName(nameLine, manufacturer));
+  if (isGarbageProductName(name)) name = '';
 
-  if (!name && !manufacturer && !itemNumber) {
+  if (!name && !manufacturer && !itemNumber && !series) {
     return {
       name: '',
       manufacturer: null,
@@ -227,7 +329,7 @@ export function suggestionFromOcrText(text) {
 
   const looksFigure = /\b(figure|figura|banpresto|glitter|nendoroid|figma|figuarts|scale|g\s*[x×]\s*materia|ichiban)\b/i.test(full)
     || /\b(banpresto|good\s*smile|bandai\s*spirits)\b/i.test(manufacturer || '');
-  return normalizeSuggestion({
+  return polishSuggestionName(normalizeSuggestion({
     name: name || [manufacturer, series, itemNumber].filter(Boolean).join(' '),
     manufacturer,
     franchise: null,
@@ -236,10 +338,10 @@ export function suggestionFromOcrText(text) {
     item_number: itemNumber,
     year: detectYear(full),
     category: looksFigure ? 'Figura' : null,
-    confidence: name && (manufacturer || itemNumber) ? 'medium' : 'low',
+    confidence: name && (manufacturer || itemNumber || series) ? 'medium' : 'low',
     source: 'ocr',
     rawText: text
-  });
+  }));
 }
 
 function detectBrand(text) {
@@ -288,6 +390,7 @@ function detectYear(text) {
 function pickNameLine(lines, brand) {
   const scored = lines.map((line) => {
     let score = line.length;
+    if (isGarbageProductName(line)) score -= 80;
     if (/^[0-9\W]+$/.test(line)) score -= 50;
     if (/glitter|glamours|nendoroid|figma|materia|ichiban|banpresto|bleach|dragon\s*ball/i.test(line)) score += 40;
     if (/nemu|kurotsuchi|vegeta|goku|link|zelda/i.test(line)) score += 30;
@@ -307,16 +410,18 @@ function cleanName(line, brand) {
   let s = String(line || '').trim();
   if (brand) s = s.replace(new RegExp(brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), '').trim();
   s = s.replace(/^[\-–—|:]+/, '').replace(/[\-–—|:]+$/, '').trim();
-  return s.slice(0, 120);
+  return sanitizeProductName(s).slice(0, 120);
 }
 
 function normalizeSuggestion(obj) {
   const str = (v) => {
     if (v == null || v === '' || v === 'null' || v === 'undefined') return null;
-    return String(v).trim() || null;
+    const cleaned = sanitizeProductName(String(v));
+    return cleaned || null;
   };
   const year = obj.year != null && obj.year !== '' ? Number(obj.year) : null;
-  const name = str(obj.name) || '';
+  let name = str(obj.name) || '';
+  if (isGarbageProductName(name)) name = '';
   const manufacturer = str(obj.manufacturer);
   const series = str(obj.series);
   const franchise = str(obj.franchise);
@@ -350,17 +455,18 @@ function normalizeSuggestion(obj) {
 export function scoreIdentitySuggestion(s) {
   if (!s?.name) return -100;
   const name = String(s.name);
+  if (isGarbageProductName(name)) return -80;
   let score = Math.min(name.length, 40);
   if (s.source === 'market-web') score += 55;
   if (s.source === 'gemini-web') score += 50;
-  if (s.source === 'gemini') score += 28;
+  if (s.source === 'gemini') score += 45;
   if (s.source === 'ocr') score += 4;
   if (s.confidence === 'high') score += 18;
   if (s.confidence === 'medium') score += 8;
   if (s.manufacturer) score += 10;
   if (s.series) score += 12;
-  if (/g\s*[x×]\s*materia|nendoroid|figma|figuarts|ichiban|scale|statue/i.test(name)) score += 22;
-  // OCR basura típica
+  if (s.character_name) score += 12;
+  if (/g\s*[x×]\s*materia|nendoroid|figma|figuarts|ichiban|glitter|scale|statue/i.test(name)) score += 22;
   if (/^(thi|the|this|that)\b/i.test(name.trim())) score -= 40;
   if (/\b\d{1,2}\b$/.test(name.trim()) && name.length < 22) score -= 15;
   if ((name.match(/\bthe\b/gi) || []).length >= 2) score -= 20;
@@ -373,8 +479,8 @@ export function scoreIdentitySuggestion(s) {
  * @param {object|null} next
  */
 export function preferBetterSuggestion(current, next) {
-  if (!next?.name) return current || null;
-  if (!current?.name) return next;
+  if (!next?.name || isGarbageProductName(next.name)) return current || null;
+  if (!current?.name || isGarbageProductName(current.name)) return next;
   return scoreIdentitySuggestion(next) >= scoreIdentitySuggestion(current) ? next : current;
 }
 
@@ -386,16 +492,20 @@ export function suggestionFromMarketMatches(matches) {
   const list = (matches || []).filter((m) => m?.title && Number(m.price) > 0);
   if (!list.length) return null;
   const ranked = [...list].sort((a, b) => {
+    const aGarbage = isGarbageProductName(cleanMarketProductTitle(a.title)) ? 1 : 0;
+    const bGarbage = isGarbageProductName(cleanMarketProductTitle(b.title)) ? 1 : 0;
+    if (aGarbage !== bGarbage) return aGarbage - bGarbage;
     const aTcg = /tcgplayer/i.test(a.source || '') ? 1 : 0;
     const bTcg = /tcgplayer/i.test(b.source || '') ? 1 : 0;
     if (bTcg !== aTcg) return bTcg - aTcg;
-    return String(a.title).length - String(b.title).length;
+    // Preferir títulos más completos (oficiales suelen ser más largos)
+    return String(b.title).length - String(a.title).length;
   });
   const title = cleanMarketProductTitle(ranked[0].title);
-  if (!title || title.length < 4) return null;
+  if (!title || title.length < 4 || isGarbageProductName(title)) return null;
   const manufacturer = detectBrand(title);
   const series = detectSeries(title);
-  return normalizeSuggestion({
+  return polishSuggestionName(normalizeSuggestion({
     name: title,
     manufacturer,
     franchise: null,
@@ -407,24 +517,22 @@ export function suggestionFromMarketMatches(matches) {
     confidence: 'high',
     source: 'market-web',
     note: 'Nombre tomado del resultado web de precios'
-  });
+  }));
 }
 
 function cleanMarketProductTitle(raw) {
-  let s = String(raw || '')
-    .replace(/\s+/g, ' ')
+  let s = sanitizeProductName(String(raw || ''))
     .replace(/\b(new|used|nib|misb|sold|auction|bid|lot)\b/gi, ' ')
     .replace(/\$\s?\d+([.,]\d+)?/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  // Quitar sufijos de listing largos
   s = s.split(/\s[-–|]\s/)[0].trim();
   return s.slice(0, 140);
 }
 
 function parseJsonObject(text) {
   if (!text) return null;
-  const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+  const cleaned = String(text).replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
   try {
     return JSON.parse(cleaned);
   } catch {

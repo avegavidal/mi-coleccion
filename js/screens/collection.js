@@ -806,7 +806,7 @@ function paintMarketResult(host, result, item, hooks = {}) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
       const chosen = result.chosenId === match.id
         || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
-      const link = listingLinkMeta(match);
+      const link = listingLinkMeta(match, item);
       const href = link.url;
       const row = el('article', {
         className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`
@@ -838,7 +838,9 @@ function paintMarketResult(host, result, item, hooks = {}) {
           ])
           : null
       ]);
-      row.addEventListener('click', () => openExternal(href));
+      row.addEventListener('click', () => {
+        if (!openExternal(href)) toast('No hay enlace válido para esta tienda', 'error');
+      });
       list.append(row);
     }
     host.append(list);

@@ -384,6 +384,7 @@ test('storeLinkForMatch abre la tienda del precio', () => {
   assert(direct === 'https://www.ebay.com/itm/123');
   assert(ebayLinks.isDirectListingUrl('https://www.ebay.com/itm/123456'));
   assert(!ebayLinks.isDirectListingUrl('https://www.ebay.com/sch/i.html?_nkw=test'));
+  assert(!ebayLinks.normalizeMarketUrl('https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc'));
   const tcg = ebayLinks.storeLinkForMatch({ source: 'tcgplayer', title: 'Charizard ex 223' });
   assert(/tcgplayer\.com\/search/.test(tcg), tcg);
   assert(/Charizard/.test(decodeURIComponent(tcg)));
@@ -403,6 +404,24 @@ test('storeLinkForMatch abre la tienda del precio', () => {
   assert(!metaSearch.exact);
   assert(/Buscar/i.test(metaSearch.label));
   assert(ebayLinks.storeLabel('cardmarket') === 'Cardmarket');
+  // Enlace debe ser de ESTA pieza, no de otra figura
+  const item = {
+    name: 'BLEACH Glitter & Glamours Nemu Kurotsuchi',
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu Kurotsuchi',
+    manufacturer: 'Banpresto',
+    category: 'Figura'
+  };
+  assert(ebayLinks.matchBelongsToItem({ title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto' }, item));
+  assert(!ebayLinks.matchBelongsToItem({ title: 'BLEACH Glitter & Glamours Orihime Inoue figure' }, item));
+  const wrongListing = ebayLinks.listingLinkMeta({
+    source: 'ebay',
+    title: 'BLEACH Glitter & Glamours Orihime Inoue',
+    url: 'https://www.ebay.com/itm/555',
+    price: 30
+  }, item);
+  assert(!wrongListing.exact, 'no debe abrir anuncio de otra figura');
+  assert(/Nemu|Glitter/i.test(decodeURIComponent(wrongListing.url)), wrongListing.url);
 });
 
 test('enlaces visuales con imageUrl', () => {
@@ -531,6 +550,17 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
   const web = { name: 'Dragon Ball Z G×materia The Vegeta', source: 'market-web', confidence: 'high', series: 'G×materia' };
   const best = vis.preferBetterSuggestion(ocr, web);
   assert(best.name.includes('G×materia') || /materia/i.test(best.name), best.name);
+  assert(vis.isGarbageProductName('Thi The Vegeta 14'));
+  assert(vis.isGarbageProductName('ab\uFFFDcd'));
+  assert(!vis.isGarbageProductName('BLEACH Glitter & Glamours Nemu Kurotsuchi'));
+  const polished = vis.polishSuggestionName({
+    name: 'Thi The',
+    series: 'Glitter & Glamours',
+    character_name: 'Nemu Kurotsuchi',
+    franchise: 'BLEACH',
+    source: 'gemini'
+  });
+  assert(/Nemu/i.test(polished.name) && /Glitter/i.test(polished.name), polished.name);
   const fromMarket = vis.suggestionFromMarketMatches([
     { title: 'Dragon Ball Z G×materia The Vegeta Banpresto', price: 28, source: 'ebay' },
     { title: 'Thi The Vegeta 14', price: 5, source: 'other' }

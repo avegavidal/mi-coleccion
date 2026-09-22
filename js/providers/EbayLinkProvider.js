@@ -290,12 +290,73 @@ export function storeLabel(source) {
 }
 
 /**
+ * Limpia título/query para armar una búsqueda usable (quita “eBay típico:”, buy, etc.).
+ * @param {{ title?: string, query?: string, source?: string }} match
+ */
+export function cleanMarketSearchQuery(match) {
+  let t = String(match?.query || match?.title || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  t = t.replace(
+    /^(eBay|Amazon|Mercari|AmiAmi|Yahoo|TCGPlayer|Cardmarket|PriceCharting|Mandarake)\s*(activo|vendidos?|bajo|típico|alto|sold|active|low|mid|high)?\s*:\s*/i,
+    ''
+  );
+  t = t.replace(/\s+\b(buy|for sale|en venta)\b\s*$/i, '').trim();
+  // Si quedó basura muy corta, intentar el otro campo
+  if (t.length < 4 && match?.title && match?.query) {
+    const alt = String(match.title !== match.query ? (match.title || match.query) : match.query)
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (alt.length > t.length) t = alt;
+  }
+  return t.slice(0, 140);
+}
+
+/**
+ * Normaliza / desenreda URLs de Gemini o grounding de Google.
+ * Descarta redirects de Vertex que no abren bien en Safari.
+ * @param {string} url
+ * @returns {string}
+ */
+export function normalizeMarketUrl(url) {
+  let u = String(url || '').trim();
+  if (!u) return '';
+  // markdown accidental
+  u = u.replace(/^<|>$/g, '').replace(/^\[.*?\]\((.*)\)$/, '$1').trim();
+
+  if (!/^https?:\/\//i.test(u) && /^[\w.-]+\.[a-z]{2,}([/:?]|$)/i.test(u)) {
+    u = `https://${u}`;
+  }
+  if (!/^https?:\/\//i.test(u)) return '';
+
+  // Redirects de grounding de Gemini: no abren bien / caducan
+  if (/vertexaisearch\.cloud\.google\.com|grounding-api-redirect|googleusercontent\.com\/grounding/i.test(u)) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(u);
+    // google.com/url?url=https://ebay...
+    if (/google\./i.test(parsed.hostname) && (parsed.searchParams.has('url') || parsed.searchParams.has('q'))) {
+      const inner = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+      if (/^https?:\/\//i.test(inner) && !/google\./i.test(inner)) {
+        return normalizeMarketUrl(inner);
+      }
+    }
+    // limpia tracking inútil pero conserva path
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+/**
  * ¿Es URL de un anuncio/producto concreto (no página de búsqueda)?
  * @param {string} url
  */
 export function isDirectListingUrl(url) {
-  const u = String(url || '');
+  const u = normalizeMarketUrl(url) || String(url || '');
   if (!/^https?:\/\//i.test(u)) return false;
+  if (/vertexaisearch|grounding-api-redirect/i.test(u)) return false;
   if (/\/sch\/i\.html|\/s\?k=|\/search\/|\?q=|searchString=|search-products|keyword=/i.test(u)
     && !/\/itm\/|\/dp\/|\/item\/|\/product\//i.test(u)) {
     return false;
@@ -305,6 +366,7 @@ export function isDirectListingUrl(url) {
     || /amazon\.[^/]+\/(dp|gp\/product)\//i.test(u)
     || /mercari\.com\/(?:us\/)?item\//i.test(u)
     || /jp\.mercari\.com\/item\//i.test(u)
+    || /amiami\.com\/.+\/detail\./i.test(u)
     || /amiami\.com\/.+\/detail\//i.test(u)
     || /tcgplayer\.com\/product\//i.test(u)
     || /page\.auctions\.yahoo\.co\.jp\/jp\/auction\//i.test(u)
@@ -315,14 +377,134 @@ export function isDirectListingUrl(url) {
 }
 
 /**
+ * ¿Se puede abrir en navegador como tienda/búsqueda conocida?
+ * @param {string} url
+ */
+export function isOpenableStoreUrl(url) {
+  const u = normalizeMarketUrl(url);
+  if (!u) return false;
+  if (isDirectListingUrl(u)) return true;
+  return (
+    /ebay\.[^/]+\/sch\//i.test(u)
+    || /amazon\.[^/]+\/s\?/i.test(u)
+    || /mercari\./i.test(u)
+    || /amiami\.com/i.test(u)
+    || /yahoo\.co\.jp|auctions\.yahoo/i.test(u)
+    || /tcgplayer\.com/i.test(u)
+    || /cardmarket\.com/i.test(u)
+    || /pricecharting\.com/i.test(u)
+    || /mandarake\.co\.jp/i.test(u)
+  );
+}
+
+/**
+ * Tokens de identidad de la pieza (foto / ficha) para filtrar matches ajenos.
+ * @param {object|null|undefined} item
+ * @returns {string[]}
+ */
+export function identityTokens(item) {
+  if (!item) return [];
+  const raw = [
+    item.character_name || item.character,
+    item.series,
+    item.manufacturer,
+    item.item_number,
+    item.franchise,
+    ...(String(item.name || '').split(/[\s:/|]+/))
+  ];
+  const stop = /^(the|and|for|with|figure|figura|prize|scale|banpresto|bandai|spirits|good|smile|company|ver|version|edition|special|color|a|b|buy|sale)$/i;
+  const out = [];
+  const seen = new Set();
+  for (const part of raw) {
+    for (const t of String(part || '').toLowerCase().split(/[\s&×x +_/,-]+/)) {
+      const tok = t.replace(/[^a-z0-9áéíóúñ]/gi, '');
+      if (tok.length < 3 || stop.test(tok) || seen.has(tok)) continue;
+      seen.add(tok);
+      out.push(tok);
+    }
+  }
+  return out;
+}
+
+/**
+ * ¿El anuncio/título corresponde a la pieza de la foto (no otra figura de la misma línea)?
+ * @param {{ title?: string, query?: string, note?: string }} match
+ * @param {object|null|undefined} item
+ */
+export function matchBelongsToItem(match, item) {
+  if (!item) return true;
+  const title = `${match?.title || ''} ${match?.note || ''}`.toLowerCase();
+  if (!title.trim()) return false;
+
+  const character = String(item.character_name || item.character || '').toLowerCase().trim();
+  const series = String(item.series || '').toLowerCase().trim();
+  const name = String(item.name || '').toLowerCase().trim();
+
+  // Personaje: si lo conocemos, el título debe incluir al menos un token fuerte
+  if (character.length >= 3) {
+    const parts = character.split(/\s+/).map((p) => p.replace(/[^a-z0-9áéíóúñ]/gi, '')).filter((p) => p.length >= 3);
+    const charHit = parts.some((p) => title.includes(p)) || title.includes(character);
+    if (!charHit) return false;
+  }
+
+  // Serie / línea (Glitter, Nendoroid, Gxmateria…): al menos un token si hay personaje+serie
+  if (series.length >= 4 && character.length >= 3) {
+    const seriesParts = series.split(/[\s&×x]+/).map((p) => p.replace(/[^a-z0-9]/gi, '')).filter((p) => p.length >= 4);
+    if (seriesParts.length && !seriesParts.some((p) => title.includes(p))) {
+      // Permitir si el nombre oficial completo aparece
+      if (!(name.length >= 10 && name.split(/\s+/).filter((t) => t.length > 3).slice(0, 3).every((t) => title.includes(t)))) {
+        return false;
+      }
+    }
+  }
+
+  const tokens = identityTokens(item);
+  if (tokens.length >= 3) {
+    const hits = tokens.filter((t) => title.includes(t)).length;
+    // Exige ~40% de tokens de identidad (mín. 2)
+    if (hits < Math.max(2, Math.ceil(tokens.length * 0.35))) return false;
+  }
+  return true;
+}
+
+/**
+ * Query de búsqueda anclada a la pieza identificada (foto), no a un título ajeno.
+ * @param {object|null|undefined} item
+ * @param {{ title?: string, query?: string }} [match]
+ */
+export function preferredSearchQuery(item, match = null) {
+  const fromItem = [
+    item?.name,
+    [item?.series, item?.character_name || item?.character].filter(Boolean).join(' '),
+    [item?.manufacturer, item?.character_name || item?.character].filter(Boolean).join(' '),
+    [item?.franchise, item?.character_name || item?.character].filter(Boolean).join(' ')
+  ]
+    .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+    .filter((s) => s.length >= 5);
+
+  const matchQ = cleanMarketSearchQuery(match || {});
+  if (matchQ && matchBelongsToItem({ title: matchQ }, item)) {
+    // Preferir nombre oficial de la ficha/foto si es sólido
+    if (item?.name && String(item.name).trim().length >= 10) return String(item.name).trim().slice(0, 140);
+    return matchQ;
+  }
+  return (fromItem[0] || matchQ || '').slice(0, 140);
+}
+
+/**
  * URL + si es anuncio exacto o solo búsqueda orientativa.
- * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number }} match
+ * Si el anuncio no es de ESTA pieza, arma búsqueda de la pieza de la foto.
+ * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number, category?: string, series?: string }} match
+ * @param {object|null} [item] pieza identificada (foto / ficha)
  * @returns {{ url: string, exact: boolean, label: string }}
  */
-export function listingLinkMeta(match) {
+export function listingLinkMeta(match, item = null) {
   const source = storeLabel(match?.source);
-  const raw = typeof match?.url === 'string' ? match.url.trim() : '';
-  if (isDirectListingUrl(raw)) {
+  const raw = normalizeMarketUrl(match?.url);
+  const belongs = matchBelongsToItem(match, item);
+
+  // Anuncio exacto solo si el título encaja con la pieza analizada
+  if (isDirectListingUrl(raw) && belongs) {
     return {
       url: raw,
       exact: true,
@@ -330,34 +512,45 @@ export function listingLinkMeta(match) {
     };
   }
 
-  const url = storeLinkForMatch(match);
+  const searchQ = preferredSearchQuery(item, match);
+  const url = storeLinkForMatch({
+    ...match,
+    title: searchQ,
+    query: searchQ,
+    url: ''
+  });
   return {
     url,
     exact: false,
-    label: `Buscar ~ese precio en ${source} →`
+    label: url
+      ? (belongs
+        ? `Buscar ~ese precio en ${source} →`
+        : `Buscar ESTA pieza en ${source} →`)
+      : 'Sin enlace válido'
   };
 }
 
 /**
  * URL para abrir el producto en su tienda.
  * Si hay enlace de anuncio real, se usa; si no, búsqueda del título (± rango de precio).
- * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number }} match
+ * @param {{ source?: string, title?: string, url?: string, query?: string, price?: number, category?: string, series?: string }} match
+ * @param {object|null} [item]
  */
-export function storeLinkForMatch(match) {
-  const direct = typeof match?.url === 'string' && /^https?:\/\//i.test(match.url.trim())
-    ? match.url.trim()
-    : '';
-  if (isDirectListingUrl(direct)) return direct;
+export function storeLinkForMatch(match, item = null) {
+  const direct = normalizeMarketUrl(match?.url);
+  if (isDirectListingUrl(direct) && matchBelongsToItem(match, item)) return direct;
 
-  const title = String(match?.title || match?.query || '').trim().slice(0, 140);
-  if (!title) return direct;
+  const title = preferredSearchQuery(item, match) || cleanMarketSearchQuery(match);
+  if (!title) {
+    return isOpenableStoreUrl(direct) ? direct : '';
+  }
   const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
   const tcg = isTcgCardItem({
     source: match?.source,
     name: title,
     title,
-    category: match?.category,
-    series: match?.series
+    category: match?.category || item?.category,
+    series: match?.series || item?.series
   }) || /^(tcgplayer|cardmarket|pricecharting)$/i.test(s);
   const price = Number(match?.price);
   const links = buildShopLinksForQuery(title, { tcg });
@@ -380,7 +573,8 @@ export function storeLinkForMatch(match) {
   if (url && Number.isFinite(price) && price > 0) {
     url = withPriceBand(url, id, price);
   }
-  return url || direct || '';
+  if (url) return url;
+  return isOpenableStoreUrl(direct) ? direct : '';
 }
 
 /**

@@ -610,11 +610,11 @@ function paintIdentifyMarketBody(host, result, probe) {
     const list = el('div', { className: 'market-match-list' });
     for (const match of matches) {
       const isMarketRef = isTcgMarketPriceMatch(match) || result.referenceMatchId === match.id;
-      const link = listingLinkMeta(match);
+      const link = listingLinkMeta(match, probe);
       const href = link.url;
       const card = el('a', {
         className: `market-match-card is-store-link${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`,
-        href,
+        href: href || '#',
         target: '_blank',
         rel: 'noopener noreferrer'
       }, [
@@ -632,7 +632,7 @@ function paintIdentifyMarketBody(host, result, probe) {
       ]);
       card.addEventListener('click', (e) => {
         e.preventDefault();
-        openExternal(href);
+        if (!openExternal(href)) toast('No hay enlace válido para esta tienda', 'error');
       });
       list.append(card);
     }

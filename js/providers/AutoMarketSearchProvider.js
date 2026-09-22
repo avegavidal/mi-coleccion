@@ -6,7 +6,7 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, matchBelongsToItem, normalizeMarketUrl } from './EbayLinkProvider.js';
 
 function readGeminiApiKey() {
   try {
@@ -724,7 +724,8 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
     const title = String(m.title || searchHint || 'Coincidencia').trim();
     const source = String(m.source || 'web');
     const rawUrl = typeof m.url === 'string' ? m.url.trim() : '';
-    const exact = isDirectListingUrl(rawUrl);
+    const normUrl = normalizeMarketUrl(rawUrl);
+    const exact = isDirectListingUrl(normUrl);
     let priceType = String(m.priceType || inferPriceType(m)).toLowerCase();
     // Sin URL de anuncio: mantener listing en tiendas conocidas (la UI marca Orientativo).
     // Solo forzar estimate si la fuente es desconocida o el modelo lo dijo.
@@ -738,20 +739,32 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
       : (priceType === 'market'
         ? 'TCGPlayer Market Price'
         : (exact ? 'Anuncio web' : 'Precio orientativo (sin link de anuncio exacto)'));
+    const searchTitle = sanitizeMatchTitle(title);
     out.push({
       id: `gem-${i}-${price}-${title.slice(0, 24)}`,
-      title,
+      title: searchTitle || title,
       price,
       currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
       source,
       priceType,
-      url: exact ? rawUrl : storeLinkForMatch({ source, title, url: rawUrl, query: searchHint, price }),
+      url: exact
+        ? normUrl
+        : storeLinkForMatch({ source, title: searchTitle || title, url: '', query: searchHint, price }),
       linkExact: exact,
       query: searchHint,
       note: noteBase
     });
   }
   return out;
+}
+
+function sanitizeMatchTitle(title) {
+  return String(title || '')
+    .replace(/\uFFFD/g, '')
+    .replace(/[^\p{L}\p{N}\s\-&:×x.'+/]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
 }
 
 function inferPriceType(m) {
@@ -929,6 +942,10 @@ export function filterDisplayMatches(matches, item) {
   const tcgItem = isTcgCardItem(item);
   const filtered = list.filter((m) => {
     const blob = `${m.title || ''} ${m.source || ''} ${m.note || ''}`.toLowerCase();
+    // Descartar anuncios de OTRA figura/personaje
+    if (item && !matchBelongsToItem(m, item) && (m.score || 0) < 6) {
+      return false;
+    }
     if (!tcgItem && /tcgplayer|cardmarket|pricecharting/.test(String(m.source || '').toLowerCase()) && (m.score || 0) < 2) {
       return false;
     }
@@ -938,12 +955,12 @@ export function filterDisplayMatches(matches, item) {
     if ((m.score || 0) < 0 && list.some((x) => (x.score || 0) >= 3)) return false;
     return true;
   });
-  const keep = filtered.length ? filtered : list;
-  // Si hay al menos un fiable, oculta web-snippet
-  if (keep.some(isReliableMatch)) {
-    return keep.filter((m) => m.source !== 'web-snippet');
+  const keep = filtered.length ? filtered : list.filter((m) => !item || matchBelongsToItem(m, item) || (m.score || 0) >= 4);
+  const finalKeep = keep.length ? keep : list;
+  if (finalKeep.some(isReliableMatch)) {
+    return finalKeep.filter((m) => m.source !== 'web-snippet');
   }
-  return keep;
+  return finalKeep;
 }
 
 async function searchPricesViaWebIndex(query, limit = 8, opts = {}) {
