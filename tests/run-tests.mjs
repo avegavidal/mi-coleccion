@@ -598,15 +598,21 @@ test('CSS barra de búsqueda de mercado existe', () => {
 console.log('\n=== Búsqueda automática de mercado ===');
 const autoM = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
 
-await testAsync('geminiClient prioriza 2.5 Flash (visión) y no usa 1.5', async () => {
+await testAsync('geminiClient prioriza modelos free con visión y rota en 503', async () => {
   const gc = await import(pathToFileURL(join(root, 'js/services/geminiClient.js')).href);
   const models = await gc.resolveGeminiModels('');
   assert(models.every((m) => !/1\.5/.test(m)), models.join(','));
-  assert(models[0] === 'gemini-2.5-flash', models.join(','));
-  assert(models.includes('gemini-2.5-flash'));
+  assert(models.includes('gemini-2.5-flash-lite'), models.join(','));
+  assert(models.includes('gemini-2.5-flash'), models.join(','));
   const vision = await gc.resolveGeminiModels('', { purpose: 'vision' });
-  assert(vision[0] === 'gemini-2.5-flash', vision.join(','));
-  assert(Array.isArray(gc.VISION_PREFERRED_MODELS) && gc.VISION_PREFERRED_MODELS[0] === 'gemini-2.5-flash');
+  assert(vision[0] === 'gemini-2.5-flash-lite', vision.join(','));
+  assert(vision.length >= 4, `vision models=${vision.length}`);
+  assert(Array.isArray(gc.VISION_PREFERRED_MODELS) && gc.VISION_PREFERRED_MODELS[0] === 'gemini-2.5-flash-lite');
+  assert(gc.shouldRotateGeminiModel(503, 'high demand'));
+  assert(gc.shouldRotateGeminiModel(429, 'RESOURCE_EXHAUSTED'));
+  assert(gc.shouldRotateGeminiModel(500, 'INTERNAL'));
+  assert(!gc.shouldRotateGeminiModel(401, 'bad key'));
+  assert(/503|saturado|otros modelos/i.test(gc.formatGeminiHttpError(503, 'high demand')));
   const grounded = gc.assignGroundingUrlsToMatches(
     [{ title: 'Nemu', price: 28, source: 'ebay', url: 'https://ebay.com/sch/i.html?_nkw=x', linkExact: false }],
     ['https://www.ebay.com/itm/1234567890', 'https://www.amiami.com/eng/detail/?gcode=FIGURE-123']

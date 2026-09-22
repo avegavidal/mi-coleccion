@@ -226,12 +226,12 @@ export async function renderSettings(root) {
       el('p', { className: 'page-sub', text: 'IA, umbrales y modelo visual.' })
     ]),
     el('section', { className: 'section' }, [
-      el('h2', { text: 'Gemini 2.5 (visión + precios)' }),
+      el('h2', { text: 'Gemini (visión + precios)' }),
       el('p', {
         className: 'page-sub',
         text: geminiSaved
-          ? 'Key guardada. Usa Gemini 2.5 Flash para fotos y precios (no se sube a GitHub).'
-          : 'Pega tu API key de Google AI Studio. Se usa Gemini 2.5 Flash (mejor visión). Solo en este dispositivo.'
+          ? 'Key guardada. Rota entre varios modelos gratis (flash-lite, flash…) si uno está saturado.'
+          : 'Pega tu API key de Google AI Studio. Usa varios modelos gratis con visión como respaldo. Solo en este dispositivo.'
       }),
       el('form', { id: 'gemini-form', className: 'stack-form' }, [
         el('label', {}, [

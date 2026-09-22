@@ -263,13 +263,13 @@ export async function autoSearchMarketMatches(item, opts = {}) {
 
   async function runGeminiPass(attempt) {
     if (!apiKey) return;
-    const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.5-flash';
+    const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.5-flash-lite';
     modelCursor += 1;
     onProgress({
       stage: 'gemini',
       attempt,
       message: hasPhoto
-        ? `Foto + IA 2.5 (${preferModel}) en paralelo…`
+        ? `Foto + IA (${preferModel}) — si falla prueba otro modelo…`
         : `IA (${preferModel}) + texto — intento ${attempt}…`
     });
     try {

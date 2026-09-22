@@ -1,36 +1,36 @@
 /**
- * Cliente Gemini compartido: modelos actuales (sin 1.5) y manejo de cuota.
+ * Cliente Gemini compartido: varios modelos gratis con visión + rotación.
  *
- * gemini-2.0-flash está apagado en AI Studio; priorizamos 2.5 Flash (mejor
- * visión + grounding) y rotamos a lite/pro si hay 429 en free tier.
+ * Ante 429 (cuota) o 503 (alta demanda) se prueba el siguiente modelo
+ * automáticamente. flash-lite suele tener más capacidad en free tier.
  */
 
-/** Orden general: mejor calidad/precio primero, luego fallbacks free-friendly. */
+/** Free-friendly primero (más cuota / menos 503), luego calidad. */
 export const PREFERRED_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-flash-latest',
   'gemini-2.5-flash-lite',
-  'gemini-2.5-pro',
-  'gemini-2.0-flash',
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
   'gemini-2.0-flash-lite',
-  'gemini-2.0-flash-001'
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-001',
+  'gemini-2.5-pro'
 ];
 
 /**
- * Visión / foto: 2.5 Flash es el sweet spot (rápido + entiende cajas).
- * Pro solo si Flash falla o cuota 0.
+ * Visión / foto: varios flash con imagen; lite primero para sobrevivir picos 503.
  */
 export const VISION_PREFERRED_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-flash-latest',
   'gemini-2.5-flash-lite',
-  'gemini-2.0-flash'
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.5-pro'
 ];
 
 /** @type {Map<string, { at: number, models: string[], purpose: string }>} */
 const listCache = new Map();
-const LIST_TTL_MS = 15 * 60 * 1000;
+const LIST_TTL_MS = 10 * 60 * 1000;
 
 /**
  * @param {string} apiKey
@@ -38,7 +38,7 @@ const LIST_TTL_MS = 15 * 60 * 1000;
  * @returns {Promise<string[]>}
  */
 export async function resolveGeminiModels(apiKey, opts = {}) {
-  const max = opts.max ?? 8;
+  const max = opts.max ?? 10;
   const purpose = opts.purpose || 'general';
   const preferred = purpose === 'vision' || purpose === 'price'
     ? VISION_PREFERRED_MODELS
@@ -63,17 +63,22 @@ export async function resolveGeminiModels(apiKey, opts = {}) {
       const available = (data.models || [])
         .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
         .map((m) => String(m.name || '').replace(/^models\//, ''))
-        .filter((id) => id && !/1\.5|embedding|tts|audio|image-preview|robotics|imagen/i.test(id));
+        .filter((id) => id && !/1\.5|embedding|tts|audio|image-preview|robotics|imagen|native-audio|live/i.test(id));
 
       const preferredHit = preferred.filter((id) => available.includes(id));
+      // Cualquier flash multimodal extra (p. ej. gemini-3.x-flash-lite) como respaldo
       const flashExtras = available.filter((id) =>
-        /flash/i.test(id) && !preferredHit.includes(id) && !/image|tts|audio|live/i.test(id)
+        /flash/i.test(id)
+        && !preferredHit.includes(id)
+        && !/image-generation|tts|audio|live|preview-image/i.test(id)
       );
       const proExtras = available.filter((id) =>
-        /pro/i.test(id) && !preferredHit.includes(id) && !flashExtras.includes(id)
-        && !/image|tts|audio|live/i.test(id)
+        /pro/i.test(id)
+        && !preferredHit.includes(id)
+        && !flashExtras.includes(id)
+        && !/image-generation|tts|audio|live/i.test(id)
       );
-      const models = [...preferredHit, ...flashExtras, ...proExtras];
+      const models = uniqueIds([...preferredHit, ...flashExtras, ...proExtras]);
       if (models.length) {
         listCache.set(cacheKey, { at: Date.now(), models, purpose });
         return models.slice(0, max);
@@ -88,12 +93,47 @@ export async function resolveGeminiModels(apiKey, opts = {}) {
   return fallback.slice(0, max);
 }
 
+function uniqueIds(ids) {
+  const seen = new Set();
+  const out = [];
+  for (const id of ids) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
+ * ¿Conviene rotar a otro modelo en vez de abortar?
+ * @param {number} status
+ * @param {string} body
+ */
+export function shouldRotateGeminiModel(status, body = '') {
+  const text = String(body || '');
+  if (status === 429 || status === 503 || status === 500) return true;
+  if (status === 404 || status === 400) return true;
+  return /RESOURCE_EXHAUSTED|quota|rate.?limit|UNAVAILABLE|high demand|overloaded|try again later|temporarily/i.test(text);
+}
+
 /**
  * @param {number} status
  * @param {string} body
  */
 export function formatGeminiHttpError(status, body) {
   const text = String(body || '');
+  if (status === 503 || /UNAVAILABLE|high demand|overloaded/i.test(text)) {
+    return (
+      'Gemini saturado (HTTP 503 / alta demanda). '
+      + 'Se probarán otros modelos gratis automáticamente…'
+    );
+  }
+  if (status === 500 || /INTERNAL/i.test(text)) {
+    return (
+      'Gemini error interno (HTTP 500). '
+      + 'Probando otro modelo…'
+    );
+  }
   if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(text)) {
     const freeZero = /free_tier|limit:\s*0/i.test(text);
     if (freeZero) {
@@ -146,15 +186,23 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
   if (opts.preferModel) {
     models = [opts.preferModel, ...models.filter((m) => m !== opts.preferModel)];
   }
+  // Asegurar al menos la lista estática de visión si el caller pasó una lista corta/vacía
+  if (!models.length) {
+    models = [...VISION_PREFERRED_MODELS];
+  }
 
   let lastErr = '';
   let lastStatus = 0;
   let sawQuota = false;
+  let sawBusy = false;
+  const tried = [];
 
-  for (const model of models) {
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
     if (opts.signal?.aborted) {
       throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
     }
+    tried.push(model);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
     try {
       const res = await fetch(url, {
@@ -169,31 +217,51 @@ export async function geminiGenerateContent(apiKey, body, opts = {}) {
       lastStatus = res.status;
       lastErr = await res.text();
 
-      // 429 en un modelo: probar el siguiente (free a menudo tiene limit 0 por modelo)
-      if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(lastErr)) {
-        sawQuota = true;
+      if (shouldRotateGeminiModel(res.status, lastErr)) {
+        if (res.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(lastErr)) sawQuota = true;
+        if (res.status === 503 || res.status === 500 || /UNAVAILABLE|high demand/i.test(lastErr)) {
+          sawBusy = true;
+          // Breve pausa antes del siguiente modelo (picos temporales)
+          try {
+            await sleep(Math.min(1200, 280 + i * 180), opts.signal);
+          } catch (abortErr) {
+            if (abortErr.name === 'AbortError' && opts.signal?.aborted) throw abortErr;
+          }
+        }
         continue;
       }
-      if (res.status === 404 || res.status === 400) continue;
       throw new Error(formatGeminiHttpError(res.status, lastErr));
     } catch (err) {
-      // Solo propagar AbortError si fue NUESTRO signal (Detener / nueva búsqueda).
-      // Timeouts de proxy, adblock, etc. también pueden venir como AbortError.
       if (err.name === 'AbortError') {
         if (opts.signal?.aborted) throw err;
         lastErr = 'Red interrumpida al contactar Gemini';
         continue;
       }
-      if (/Gemini \d|Modelo Gemini/i.test(err.message) && !/429|Cuota|free:/i.test(err.message)) throw err;
+      // Errores ya formateados de rotación no deben abortar el loop
+      if (/Gemini saturado|Cuota\/rate|Gemini free:|error interno|Probando otro|Se probarán otros/i.test(err.message)) {
+        lastErr = err.message;
+        continue;
+      }
+      if (/Gemini \d|Modelo Gemini/i.test(err.message) && !/429|503|500|Cuota|free:|saturado/i.test(err.message)) {
+        throw err;
+      }
       lastErr = err.message;
     }
   }
 
-  if (sawQuota) {
-    // Refrescar lista por si hay modelos nuevos
+  if (sawQuota || sawBusy) {
     for (const key of [...listCache.keys()]) {
       if (key.startsWith(`${apiKey}::`) || key === apiKey) listCache.delete(key);
     }
+  }
+
+  if (sawBusy && !sawQuota) {
+    throw new Error(
+      formatGeminiHttpError(503, lastErr)
+      + ` Probados: ${tried.slice(0, 6).join(', ')}.`
+    );
+  }
+  if (sawQuota) {
     throw new Error(formatGeminiHttpError(429, lastErr));
   }
 
@@ -234,7 +302,6 @@ export function extractGroundingUrls(data) {
       push(chunk?.web?.uri || chunk?.web?.url);
     }
   }
-  // Algunos responses incluyen searchEntryPoint / citations
   for (const cite of cand?.citationMetadata?.citationSources || []) {
     push(cite?.uri || cite?.url);
   }

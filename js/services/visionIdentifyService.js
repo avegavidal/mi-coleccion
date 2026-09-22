@@ -143,7 +143,7 @@ async function identifyWithGemini(file, apiKey, onProgress = () => {}) {
   } = await import('./geminiClient.js');
 
   const models = await resolveGeminiModels(apiKey, { purpose: 'vision' });
-  const preferModel = models[0] || 'gemini-2.5-flash';
+  const preferModel = models[0] || 'gemini-2.5-flash-lite';
   const genOpts = { models, preferModel, purpose: 'vision' };
 
   const visionPrompt = `You are looking at ONE photo of a collectible (anime figure box or trading card).
