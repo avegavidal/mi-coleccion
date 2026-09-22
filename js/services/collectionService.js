@@ -79,6 +79,7 @@ export async function listItems(filters = {}) {
       item_images ( id, storage_path, image_type, created_at )
     `);
 
+  if (filters.ids?.length) query = query.in('id', filters.ids);
   if (filters.collection_id) query = query.eq('collection_id', filters.collection_id);
   if (filters.manufacturer) query = query.ilike('manufacturer', `%${filters.manufacturer}%`);
   if (filters.condition) query = query.eq('condition', filters.condition);

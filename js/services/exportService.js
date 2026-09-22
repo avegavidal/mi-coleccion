@@ -1,5 +1,5 @@
 import { listItems, listCollections, createItem, createCollection } from './collectionService.js';
-import { getSignedUrl } from './imageService.js';
+// getSignedUrl ya no se usa aquí; thumbs van por imageService.getSignedUrls
 
 function escapeCsv(value) {
   if (value == null) return '';
@@ -190,18 +190,14 @@ export async function importCollectionCSV(text) {
 }
 
 export async function enrichItemsWithThumbs(items) {
-  const out = [];
-  for (const item of items) {
-    const first = (item.item_images || [])[0];
-    let thumbUrl = null;
-    if (first?.storage_path) {
-      try {
-        thumbUrl = await getSignedUrl(first.storage_path);
-      } catch {
-        thumbUrl = null;
-      }
-    }
-    out.push({ ...item, thumbUrl });
-  }
-  return out;
+  const list = items || [];
+  const paths = list
+    .map((item) => (item.item_images || [])[0]?.storage_path)
+    .filter(Boolean);
+  const { getSignedUrls } = await import('./imageService.js');
+  const map = await getSignedUrls(paths, 60 * 60 * 6, { variant: 'thumb' });
+  return list.map((item) => {
+    const p = (item.item_images || [])[0]?.storage_path;
+    return { ...item, thumbUrl: p ? (map[p] || null) : null };
+  });
 }

@@ -87,7 +87,7 @@ export async function recognizeImage(image, options = {}) {
     g.bestStoragePath,
     ...g.images.map((i) => i.storagePath)
   ]);
-  const urlMap = await getSignedUrls(paths);
+  const urlMap = await getSignedUrls(paths, 3600, { variant: 'thumb' });
 
   for (const g of grouped) {
     g.bestImageUrl = urlMap[g.bestStoragePath] || null;

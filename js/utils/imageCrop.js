@@ -361,6 +361,6 @@ export async function prepareImageForAnalysis(file, opts = {}) {
     if (cropped == null) return null; // cancelado
     working = cropped;
   }
-  const { compressImage } = await import('./dom.js');
-  return compressImage(working);
+  const { compressImageUpload } = await import('./dom.js');
+  return compressImageUpload(working);
 }

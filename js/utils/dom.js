@@ -151,13 +151,12 @@ export function imageTypeLabel(type) {
   return map[type] || type || 'Foto';
 }
 
-export function compressImage(file, maxSide = 1280, quality = 0.85) {
+export function compressImage(file, maxSide = 1024, quality = 0.72, preferMime = 'image/webp') {
   return new Promise((resolve, reject) => {
     if (!file) {
       reject(new Error('No hay archivo'));
       return;
     }
-    // HEIC/HEIF: Safari a veces no pinta en canvas; devolver original
     const type = file.type || '';
     if (type.includes('heic') || type.includes('heif')) {
       resolve(file);
@@ -165,6 +164,11 @@ export function compressImage(file, maxSide = 1280, quality = 0.85) {
     }
     if (type && !type.startsWith('image/')) {
       reject(new Error('Archivo no es imagen'));
+      return;
+    }
+    // Ya es pequeña: no re-encode (ahorra tiempo al listar/re-subir)
+    if (file.size && file.size < 90_000 && type.startsWith('image/') && !type.includes('png')) {
+      resolve(file);
       return;
     }
     const url = URL.createObjectURL(file);
@@ -182,28 +186,67 @@ export function compressImage(file, maxSide = 1280, quality = 0.85) {
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { alpha: false });
       ctx.drawImage(img, 0, 0, w, h);
-      canvas.toBlob(
-        (blob) => {
-          URL.revokeObjectURL(url);
-          if (!blob) {
-            resolve(file);
-            return;
-          }
-          resolve(new File([blob], (file.name || 'foto').replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
-        },
-        'image/jpeg',
-        quality
-      );
+
+      const finish = (blob, mime, ext) => {
+        URL.revokeObjectURL(url);
+        if (!blob) {
+          resolve(file);
+          return;
+        }
+        // Si el resultado salió más grande, queda el original
+        if (blob.size >= file.size * 0.98 && file.size < 400_000) {
+          resolve(file);
+          return;
+        }
+        const base = String(file.name || 'foto').replace(/\.\w+$/, '');
+        resolve(new File([blob], `${base}.${ext}`, { type: mime }));
+      };
+
+      const tryWebp = preferMime === 'image/webp'
+        && typeof canvas.toBlob === 'function';
+
+      if (tryWebp) {
+        canvas.toBlob(
+          (blob) => {
+            if (blob && blob.size > 0 && blob.type === 'image/webp') {
+              finish(blob, 'image/webp', 'webp');
+            } else {
+              canvas.toBlob(
+                (b2) => finish(b2, 'image/jpeg', 'jpg'),
+                'image/jpeg',
+                quality
+              );
+            }
+          },
+          'image/webp',
+          quality
+        );
+      } else {
+        canvas.toBlob(
+          (blob) => finish(blob, 'image/jpeg', 'jpg'),
+          'image/jpeg',
+          quality
+        );
+      }
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      // Fallback: usar archivo original (p. ej. formatos raros)
       resolve(file);
     };
     img.src = url;
   });
+}
+
+/** Foto completa para almacenamiento / CLIP (~≤150–250 KB típico). */
+export function compressImageUpload(file) {
+  return compressImage(file, 1024, 0.72, 'image/webp');
+}
+
+/** Miniatura para grids / dashboard (~≤25–40 KB). */
+export function compressImageThumb(file) {
+  return compressImage(file, 360, 0.55, 'image/webp');
 }
 
 export function setBusy(button, busy, label) {

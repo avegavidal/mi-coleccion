@@ -59,7 +59,7 @@ export async function renderCollectionsManage(root) {
   try {
     const stats = await listCollectionsWithStats();
     const allPaths = stats.flatMap((c) => c.previewPaths || []);
-    const urls = await getSignedUrls(allPaths);
+    const urls = await getSignedUrls(allPaths, 3600, { variant: 'thumb' });
     const grid = root.querySelector('#cat-grid');
     grid.innerHTML = '';
 

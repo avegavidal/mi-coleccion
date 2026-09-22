@@ -322,7 +322,7 @@ async function refreshCollectionByName(shell, suggestion, previewUrl) {
     const paths = items
       .map((it) => (it.item_images || []).sort((a, b) => String(a.image_type).localeCompare(String(b.image_type)))[0]?.storage_path)
       .filter(Boolean);
-    const urls = await getSignedUrls(paths);
+    const urls = await getSignedUrls(paths, 3600, { variant: 'thumb' });
 
     const nameMatches = items.slice(0, 6).map((it) => {
       const img = (it.item_images || [])[0];
@@ -685,7 +685,14 @@ function matchCard(match, previewUrl) {
   return el('article', { className: `match-card level-${match.level}` }, [
     el('div', { className: 'match-photo' }, [
       match.bestImageUrl
-        ? el('img', { src: match.bestImageUrl, alt: match.name, loading: 'lazy' })
+        ? el('img', {
+          src: match.bestImageUrl,
+          alt: match.name,
+          loading: 'lazy',
+          decoding: 'async',
+          width: 120,
+          height: 160
+        })
         : el('div', { className: 'photo-placeholder', text: '?' })
     ]),
     el('div', { className: 'match-body' }, [

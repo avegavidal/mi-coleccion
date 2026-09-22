@@ -671,27 +671,15 @@ a.stat-card:active {
   animation: rise 0.45s var(--ease) both;
   box-shadow: var(--shadow-md);
   transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
-}
-
-.item-card:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-lg);
-}
-
-.item-card:active {
-  transform: scale(0.985);
-}
-
-.item-card-photo {
-  aspect-ratio: 3 / 4;
-  background: linear-gradient(160deg, var(--bg-3), #cfd9e2);
-  overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: 280px;
 }
 
 .item-card-photo img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  background: var(--bg-3);
   transition: transform 0.55s var(--ease);
 }
 

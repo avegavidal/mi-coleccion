@@ -445,6 +445,25 @@ test('enlaces visuales con imageUrl', () => {
   assert(ids.includes('bing-visual'));
 });
 
+test('imágenes lite: thumbs + compresión upload', () => {
+  const imgSrc = readFileSync(join(root, 'js/services/imageService.js'), 'utf8');
+  assert(/export function thumbStoragePath/.test(imgSrc));
+  assert(/createSignedUrls/.test(imgSrc));
+  assert(/compressImageThumb/.test(imgSrc));
+  assert(/_t\.webp/.test(imgSrc));
+  assert(/transform:\s*\{\s*width:\s*360/.test(imgSrc));
+  const domSrc = readFileSync(join(root, 'js/utils/dom.js'), 'utf8');
+  assert(/compressImageUpload/.test(domSrc));
+  assert(/compressImageThumb/.test(domSrc));
+  assert(/image\/webp/.test(domSrc));
+  const exp = readFileSync(join(root, 'js/services/exportService.js'), 'utf8');
+  assert(/variant:\s*'thumb'/.test(exp));
+  const dash = readFileSync(join(root, 'js/screens/dashboard.js'), 'utf8');
+  assert(/ids/.test(dash) && !/listItems\(\)/.test(dash));
+  // Convención de path
+  assert(imgSrc.includes("replace(/\\.[^.]+$/, '_t.webp')") || imgSrc.includes("_t.webp"));
+});
+
 test('OCR suggestionFromOcrText detecta marca y nombre', async () => {
   const vis = await import(pathToFileURL(join(root, 'js/services/visionIdentifyService.js')).href);
   const s = vis.suggestionFromOcrText('Good Smile Company\nNendoroid Link\nNo. 563');

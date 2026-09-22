@@ -347,7 +347,7 @@ export async function renderItemDetail(root, params) {
   const item = await getItem(id);
   const paths = (item.item_images || []).map((i) => i.storage_path);
   // URL firmada larga para que Google Lens pueda leer la foto
-  const urls = await getSignedUrls(paths, 60 * 60 * 12);
+  const urls = await getSignedUrls(paths, 60 * 60 * 12, { variant: 'full' });
 
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
@@ -606,7 +606,12 @@ export async function renderItemDetail(root, params) {
     for (const img of item.item_images) {
       gallery.append(
         el('figure', { className: 'gallery-item' }, [
-          el('img', { src: urls[img.storage_path] || '', alt: imageTypeLabel(img.image_type), loading: 'lazy' }),
+          el('img', {
+            src: urls[img.storage_path] || '',
+            alt: imageTypeLabel(img.image_type),
+            loading: 'lazy',
+            decoding: 'async'
+          }),
           el('figcaption', { text: imageTypeLabel(img.image_type) })
         ])
       );
@@ -639,7 +644,7 @@ export async function renderItemDetail(root, params) {
 export async function renderEdit(root, params) {
   const id = params[0];
   const [item, collections] = await Promise.all([getItem(id), listCollections()]);
-  const urls = await getSignedUrls((item.item_images || []).map((i) => i.storage_path));
+  const urls = await getSignedUrls((item.item_images || []).map((i) => i.storage_path), 3600, { variant: 'thumb' });
 
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [

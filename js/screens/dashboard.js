@@ -61,8 +61,7 @@ export async function renderDashboard(root) {
     }
 
     const ids = stats.recent.map((r) => r.id);
-    const items = await listItems();
-    const filtered = items.filter((i) => ids.includes(i.id));
+    const filtered = await listItems({ ids, sort: 'newest' });
     const withThumbs = await enrichItemsWithThumbs(filtered);
     withThumbs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
@@ -84,7 +83,7 @@ export function itemCard(item) {
     el('div', {
       className: 'item-card-photo',
       html: item.thumbUrl
-        ? `<img src="${item.thumbUrl}" alt="${(item.name || '').replace(/"/g, '')}" loading="lazy">`
+        ? `<img src="${item.thumbUrl}" alt="${(item.name || '').replace(/"/g, '')}" loading="lazy" decoding="async" fetchpriority="low" width="360" height="480">`
         : '<div class="photo-placeholder">Sin foto</div>'
     }),
     el('p', { className: 'qty-badge', text: `×${item.quantity || 1}` }),

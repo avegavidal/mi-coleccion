@@ -1,4 +1,4 @@
-import { el, emptyState, toast, setBusy, compressImage, formatMoney } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, compressImageUpload, formatMoney } from '../utils/dom.js';
 import {
   listWishlist, createWishlistItem, deleteWishlistItem, withSignedWishlistPhotos
 } from '../services/wishlistService.js';
@@ -45,7 +45,7 @@ export async function renderWishlist(root) {
     setBusy(btn, true);
     try {
       let file = photoFile;
-      if (file) file = await compressImage(file);
+      if (file) file = await compressImageUpload(file);
       await createWishlistItem(Object.fromEntries(fd.entries()), file);
       toast('Agregado', 'ok');
       location.reload();
