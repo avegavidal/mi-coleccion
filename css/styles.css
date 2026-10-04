@@ -419,18 +419,22 @@ a.btn {
 }
 
 .category-check-grid {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.check-chip {
-  display: inline-flex;
+/* Más específico que `.stack-form label` (esa regla ponía column y deformaba los chips) */
+.stack-form .category-multi .check-chip,
+.category-multi .check-chip {
+  display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin: 0;
-  padding: 8px 12px;
-  border-radius: 999px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 12px;
   border: 1px solid var(--line-strong);
   background: var(--bg-1);
   font-size: 0.86rem;
@@ -440,13 +444,25 @@ a.btn {
   transition: background 0.2s var(--ease), border-color 0.2s var(--ease), color 0.2s var(--ease);
 }
 
-.check-chip input {
-  width: 16px;
-  height: 16px;
+.stack-form .category-multi .check-chip input,
+.category-multi .check-chip input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
   accent-color: var(--accent);
 }
 
-.check-chip.is-on {
+.stack-form .category-multi .check-chip > span,
+.category-multi .check-chip > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.stack-form .category-multi .check-chip.is-on,
+.category-multi .check-chip.is-on {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-2);
