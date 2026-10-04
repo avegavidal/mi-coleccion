@@ -3,18 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-  <meta name="theme-color" content="#e8eef2" />
+  <meta name="theme-color" content="#e8f0f2" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Mi Colección" />
   <meta name="description" content="Administra tu colección de figuras e identifica piezas por similitud visual." />
-  <link rel="manifest" href="./manifest.json?v=4" />
+  <link rel="manifest" href="./manifest.json?v=5" />
   <link rel="apple-touch-icon" href="./assets/icons/icon-180.png" />
   <link rel="icon" type="image/png" href="./assets/icons/icon-192.png" />
+  <script>
+    (function () {
+      try {
+        var k = 'mi_coleccion_theme_v1';
+        var pref = localStorage.getItem(k) || 'system';
+        var dark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+        var resolved = pref === 'dark' || (pref !== 'light' && dark) ? 'dark' : 'light';
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themePref = pref === 'light' || pref === 'dark' ? pref : 'system';
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', resolved === 'dark' ? '#0c1218' : '#e8f0f2');
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./css/styles.css?v=39" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/styles.css?v=59" />
   <title>Mi Colección</title>
 </head>
 <body>
@@ -47,7 +61,7 @@
 
   <div id="toast-host" class="toast-host"></div>
 
-  <script src="./js/config.js?v=39"></script>
-  <script type="module" src="./js/app.js?v=39"></script>
+  <script src="./js/config.js?v=59"></script>
+  <script type="module" src="./js/app.js?v=59"></script>
 </body>
 </html>

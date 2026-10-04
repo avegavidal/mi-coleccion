@@ -7,6 +7,10 @@ import {
   saveIdentificationHistory,
   checkWishlistHints
 } from '../services/recognitionService.js';
+import {
+  isClearSimilarityMatch,
+  markNameAlignedMatches
+} from '../utils/similarity.js';
 import { incrementQuantity, getItem, listItems } from '../services/collectionService.js';
 import { getSignedUrls, listItemImages } from '../services/imageService.js';
 import { warmupEmbeddings } from '../services/embeddingService.js';
@@ -60,7 +64,7 @@ export async function renderIdentify(root) {
     const workspace = root.querySelector('#id-workspace');
     const shell = mountIdentifyShell(workspace, prev.previewUrl);
     if (prev.result) {
-      paintCollectionTrack(shell.collectionBody, prev.result, prev.previewUrl);
+      paintCollectionTrack(shell, prev.result, prev.previewUrl);
       shell.collectionStatus.textContent = 'Comparación con tu colección';
     } else {
       shell.collectionStatus.textContent = 'Sin resultado de colección guardado';
@@ -149,6 +153,7 @@ function mountIdentifyShell(workspace, previewUrl) {
           el('p', { className: 'page-sub', text: 'Compara la foto con tus piezas (CLIP local).' })
         ]),
         el('p', { id: 'id-collection-status', className: 'status-line muted', text: 'Buscando en tu colección…' }),
+        el('div', { id: 'id-collection-cta', className: 'identify-collection-cta' }),
         el('div', { id: 'id-collection-body', className: 'identify-track-body' })
       ]),
       el('section', { className: 'section market-panel identify-track identify-track-market', id: 'track-market' }, [
@@ -192,6 +197,7 @@ function mountIdentifyShell(workspace, previewUrl) {
 
   return {
     collectionStatus: workspace.querySelector('#id-collection-status'),
+    collectionCta: workspace.querySelector('#id-collection-cta'),
     collectionBody: workspace.querySelector('#id-collection-body'),
     marketStatus: workspace.querySelector('#id-market-status'),
     marketProgress: workspace.querySelector('#id-market-progress'),
@@ -206,8 +212,9 @@ function mountIdentifyShell(workspace, previewUrl) {
 }
 
 async function runCollectionTrack(shell, file, previewUrl) {
-  const { collectionStatus, collectionBody } = shell;
+  const { collectionStatus, collectionBody, collectionCta } = shell;
   collectionStatus.textContent = 'Analizando y buscando en tu colección…';
+  if (collectionCta) collectionCta.innerHTML = '';
   collectionBody.innerHTML = '';
   collectionBody.append(el('p', { className: 'muted', text: 'Esto no espera al precio de mercado.' }));
 
@@ -223,47 +230,131 @@ async function runCollectionTrack(shell, file, previewUrl) {
       }
     });
     if (globalThis.__identifyState) globalThis.__identifyState.result = result;
-    paintCollectionTrack(collectionBody, result, previewUrl);
+    paintCollectionTrack(shell, result, previewUrl);
     const n = (result.strongMatches?.length || 0) + (result.weakMatches?.length || 0);
-    collectionStatus.textContent = n
-      ? `${n} posible${n === 1 ? '' : 's'} en tu colección`
-      : 'No aparece en tu colección';
+    const sims = [
+      ...(result.strongMatches || []).map((m) => Number(m.similarity) || 0),
+      ...(result.weakMatches || []).map((m) => Number(m.similarity) || 0)
+    ].sort((a, b) => b - a);
+    const high = result.settings?.high_similarity_threshold ?? 0.88;
+    const clear = isClearSimilarityMatch(sims[0] || 0, sims[1] || 0, result.settings || {});
+    const best = sims[0] || 0;
+    const pct = Math.round(high * 100);
+    collectionStatus.textContent = clear
+      ? `${n} posible${n === 1 ? '' : 's'} · mejor ${formatSimilarity(best)}`
+      : n
+        ? `Ninguna clara al ${pct}%+ (mejor ${formatSimilarity(best)}) — revisa o agrega nueva`
+        : 'No aparece en tu colección';
   } catch (err) {
     console.error(err);
     collectionStatus.textContent = err.message || 'Error al buscar en colección';
+    if (collectionCta) collectionCta.innerHTML = '';
     collectionBody.innerHTML = '';
     collectionBody.append(el('p', { className: 'error-text', text: err.message }));
   }
 }
 
-function paintCollectionTrack(host, result, previewUrl) {
+function paintCollectionTrack(shellOrHost, result, previewUrl, suggestion = null) {
+  // Compat: remount pasa collectionBody; flujo normal pasa shell completo
+  const host = shellOrHost?.collectionBody || shellOrHost;
+  const ctaHost = shellOrHost?.collectionCta
+    || host?.closest?.('#track-collection')?.querySelector('#id-collection-cta')
+    || null;
   if (!host || !result) return;
   host.innerHTML = '';
-  const { strongMatches, weakMatches } = result;
+  if (ctaHost) ctaHost.innerHTML = '';
 
-  if (!strongMatches.length) {
-    host.append(
-      el('div', { className: 'notice notice-warn' }, [
-        el('h3', { text: 'No hay coincidencia clara' }),
-        el('p', { text: 'Puedes agregarla como nueva cuando quieras.' }),
-        el('button', {
-          type: 'button',
-          className: 'btn btn-primary btn-block',
-          text: 'Agregar a mi colección',
-          onClick: () => {
-            globalThis.__pendingIdentifyFile = globalThis.__identifyState?.file;
-            navigate('add');
-          }
-        })
+  const settings = result.settings || {
+    high_similarity_threshold: 0.88,
+    medium_similarity_threshold: 0.78,
+    low_similarity_threshold: 0.58
+  };
+  const CLEAR_MIN = Number(settings.high_similarity_threshold) || 0.88;
+  const pct = Math.round(CLEAR_MIN * 100);
+  const sug = suggestion || globalThis.__identifyState?.suggestion || null;
+
+  let strongMatches = markNameAlignedMatches(result.strongMatches || [], sug, settings);
+  let weakMatches = markNameAlignedMatches(result.weakMatches || [], sug, settings);
+  // Preferentes (nombre+visual) primero dentro de cada banda
+  const prefer = (a, b) => (b.preferredCandidate ? 1 : 0) - (a.preferredCandidate ? 1 : 0)
+    || (Number(b.similarity) || 0) - (Number(a.similarity) || 0);
+  strongMatches = [...strongMatches].sort(prefer);
+  weakMatches = [...weakMatches].sort(prefer);
+
+  const sims = [
+    ...strongMatches.map((m) => Number(m.similarity) || 0),
+    ...weakMatches.map((m) => Number(m.similarity) || 0)
+  ].sort((a, b) => b - a);
+  const hasClearMatch = isClearSimilarityMatch(sims[0] || 0, sims[1] || 0, settings);
+  const hasAny = strongMatches.length + weakMatches.length > 0;
+
+  const addNewBtn = (primary) =>
+    el('button', {
+      type: 'button',
+      id: primary ? 'identify-primary-add' : 'identify-secondary-add',
+      className: primary ? 'btn btn-primary btn-block' : 'btn btn-ghost btn-block',
+      text: primary ? 'Agregar figura nueva' : 'No es ninguna — agregar nueva',
+      onClick: async () => {
+        try {
+          await saveIdentificationHistory({
+            results: summarize(result),
+            outcome: 'added_new'
+          });
+        } catch { /* optional */ }
+        globalThis.__pendingIdentifyFile = globalThis.__identifyState?.file;
+        navigate('add');
+      }
+    });
+
+  const putCta = (node) => {
+    if (ctaHost) ctaHost.append(node);
+    else host.prepend(node);
+  };
+
+  if (!hasClearMatch) {
+    putCta(
+      el('div', { className: 'notice notice-warn identify-add-sticky', id: 'identify-add-block' }, [
+        el('h3', { text: hasAny ? `Ninguna coincide al ${pct}%+` : 'No hay coincidencia clara' }),
+        el('p', {
+          text: hasAny
+            ? 'Las parecidas abajo son solo orientación. Si no estás seguro, agrégala como nueva.'
+            : 'Puedes agregarla como nueva a tu colección.'
+        }),
+        addNewBtn(true)
       ])
     );
-  } else {
+  }
+
+  // Solo el mejor (con gap) cuenta como claro; el resto son “parecidas”
+  const topClear = hasClearMatch
+    ? strongMatches.find((m) => (Number(m.similarity) || 0) >= CLEAR_MIN
+      && (Number(m.similarity) || 0) === sims[0])
+    : null;
+  const clearList = topClear ? [topClear] : [];
+  const maybeStrong = strongMatches.filter((m) => m !== topClear);
+
+  if (clearList.length) {
     host.append(
-      el('p', { className: 'muted', text: 'La similitud es orientación, no certeza. Confirma tú.' }),
+      el('p', {
+        className: 'muted',
+        text: `Posible coincidencia clara (≥${pct}% y separada del resto). Confirma tú.`
+      }),
       el('div', { className: 'match-list', id: 'strong-list' })
     );
     const strongList = host.querySelector('#strong-list');
-    for (const m of strongMatches) strongList.append(matchCard(m, previewUrl));
+    for (const m of clearList) strongList.append(matchCard(m, previewUrl, { clear: true }));
+  }
+
+  if (maybeStrong.length) {
+    host.append(
+      el('p', {
+        className: 'muted',
+        text: `Parecidas por debajo del ${pct}% o sin separación clara — no se confirma.`
+      }),
+      el('div', { className: 'match-list', id: 'maybe-list' })
+    );
+    const maybeList = host.querySelector('#maybe-list');
+    for (const m of maybeStrong) maybeList.append(matchCard(m, previewUrl, { clear: false }));
   }
 
   if (weakMatches.length) {
@@ -272,27 +363,11 @@ function paintCollectionTrack(host, result, previewUrl) {
       el('div', { className: 'match-list', id: 'weak-list' })
     );
     const weakList = host.querySelector('#weak-list');
-    for (const m of weakMatches) weakList.append(matchCard(m, previewUrl));
+    for (const m of weakMatches) weakList.append(matchCard(m, previewUrl, { clear: false }));
   }
 
-  if (strongMatches.length || weakMatches.length) {
-    host.append(
-      el('button', {
-        type: 'button',
-        className: 'btn btn-ghost btn-block',
-        text: 'No es ninguna — agregar nueva',
-        onClick: async () => {
-          try {
-            await saveIdentificationHistory({
-              results: summarize(result),
-              outcome: 'added_new'
-            });
-          } catch { /* optional */ }
-          globalThis.__pendingIdentifyFile = globalThis.__identifyState?.file;
-          navigate('add');
-        }
-      })
-    );
+  if (hasClearMatch && hasAny) {
+    putCta(addNewBtn(false));
   }
 }
 
@@ -332,15 +407,15 @@ async function refreshCollectionByName(shell, suggestion, previewUrl) {
         franchise: it.franchise,
         manufacturer: it.manufacturer,
         collectionName: it.collections?.name,
-        similarity: 0.92,
-        level: 'high',
+        similarity: null,
+        level: 'name',
         bestImageUrl: img ? urls[img.storage_path] : null,
         bestImageId: img?.id || null,
         fromNameSearch: true
       };
     });
 
-    // Prefijar bloque de matches por nombre sin borrar CLIP si ya pintó
+    // Prefijar bloque de matches por nombre sin empujar el CTA "agregar nueva"
     let nameHost = collectionBody.querySelector('#name-match-block');
     if (!nameHost) {
       nameHost = el('div', { id: 'name-match-block' });
@@ -350,14 +425,14 @@ async function refreshCollectionByName(shell, suggestion, previewUrl) {
     nameHost.append(
       el('p', {
         className: 'muted small',
-        text: `Por nombre web (“${q}”) — ${nameMatches.length} en tu colección`
+        text: `Por nombre web (“${q}”) — no es similitud visual. Confirma con la foto.`
       }),
       el('div', { className: 'match-list', id: 'name-match-list' })
     );
     const list = nameHost.querySelector('#name-match-list');
-    for (const m of nameMatches) list.append(matchCard(m, previewUrl));
+    for (const m of nameMatches) list.append(matchCard(m, previewUrl, { clear: false, byName: true }));
 
-    if (collectionStatus && /No aparece|Buscando|Analizando/i.test(collectionStatus.textContent || '')) {
+    if (collectionStatus && /No aparece|Buscando|Analizando|Ninguna al/i.test(collectionStatus.textContent || '')) {
       collectionStatus.textContent = `${nameMatches.length} por nombre · revisa también similitud visual`;
     }
   } catch (err) {
@@ -489,26 +564,37 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       showSearching(false);
       cancelBtn?.classList.add('hidden');
       const nameBefore = suggestion?.name || '';
+      const probeBefore = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
       applyWebIdentity(marketResult);
       const nameAfter = suggestion?.name || '';
       latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
 
-      const weak = marketResult.status !== 'found' || !marketResult.matches?.length;
-      const nameImproved = nameAfter && nameAfter !== nameBefore
-        && nameAfter.length >= Math.max(8, nameBefore.length);
-      if (!autoRefineDone && weak && nameImproved) {
-        autoRefineDone = true;
-        marketStatus.textContent = 'Identidad mejorada — buscando precio…';
-        runMarketLookup(true);
-        return;
-      }
-
-      paintMarket(marketResult);
-      marketStatus.textContent = marketResult.status === 'found'
-        ? (marketResult.matches?.length > 1
-          ? `${marketResult.matches.length} precios · identidad: ${suggestion?.name || 'foto'}`
-          : `Precio encontrado · ${suggestion?.name || 'foto'}`)
-        : (marketResult.note || 'Sin precio automático');
+      import('../providers/AutoMarketSearchProvider.js').then(({ identityWeak }) => {
+        if (gen !== lookupGen) return;
+        const wasWeak = identityWeak(probeBefore);
+        const nowSolid = !identityWeak(latestProbe);
+        const weakResults = marketResult.status !== 'found'
+          || !marketResult.matches?.length
+          || !marketResult.reliable;
+        const nameImproved = nameAfter && nameAfter !== nameBefore
+          && nameAfter.length >= Math.max(8, nameBefore.length);
+        // Reconsultar si la identidad pasó de floja→sólida, o si mejoró el nombre y aún no hay precio fiable
+        if (!autoRefineDone && ((wasWeak && nowSolid) || (weakResults && nameImproved))) {
+          autoRefineDone = true;
+          marketStatus.textContent = 'Identidad mejorada — buscando precio…';
+          runMarketLookup(true);
+          return;
+        }
+        paintMarket(marketResult);
+        marketStatus.textContent = marketResult.status === 'found'
+          ? (marketResult.matches?.length > 1
+            ? `${marketResult.matches.length} precios · identidad: ${suggestion?.name || 'foto'}`
+            : `Precio encontrado · ${suggestion?.name || 'foto'}`)
+          : (marketResult.note || 'Sin precio automático');
+      }).catch(() => {
+        paintMarket(marketResult);
+        marketStatus.textContent = marketResult.note || 'Sin precio automático';
+      });
     }).catch((err) => {
       if (gen !== lookupGen) return; // reemplazada por otra búsqueda — ignorar
       showSearching(false);
@@ -536,7 +622,7 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
   };
 
   const runMarketPipeline = async () => {
-    marketStatus.textContent = 'Identificando pieza…';
+    marketStatus.textContent = 'Identificando el ítem por foto…';
     showSearching(true);
     setDetected(suggestion);
     const file = opts.file || globalThis.__identifyState?.file;
@@ -546,11 +632,21 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       try {
         const s = await identifyFigureFromPhoto(file, {
           onProgress: (p) => {
-            if (marketStatus) marketStatus.textContent = p.message || 'Identificando…';
+            if (!marketStatus) return;
+            const raw = String(p?.message || '').trim();
+            marketStatus.textContent = /identificando|buscando el producto|reintentando/i.test(raw)
+              ? raw
+              : 'Identificando el ítem por foto…';
           }
         });
         setDetected(preferBetterSuggestion(suggestion, s));
-        if (suggestion?.name) refreshCollectionByName(shell, suggestion, previewUrl);
+        if (suggestion?.name) {
+          refreshCollectionByName(shell, suggestion, previewUrl);
+          // Re-pintar matches CLIP con fusión nombre+visual
+          if (globalThis.__identifyState?.result) {
+            paintCollectionTrack(shell, globalThis.__identifyState.result, previewUrl, suggestion);
+          }
+        }
       } catch (err) {
         console.warn('[identify] vision for market failed', err);
       }
@@ -562,11 +658,19 @@ function wireMarketTrack(shell, previewUrl, opts = {}) {
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    if (!suggestion?.name) {
+    const { identityWeak } = await import('../providers/AutoMarketSearchProvider.js');
+    latestProbe = buildIdentifyProbeItem(suggestion, globalThis.__identifyState?.result || null);
+    if (identityWeak(latestProbe) && fileBlobOrState(opts)) {
+      marketStatus.textContent = 'Identidad floja — 1.er pase solo por foto…';
+    } else if (!suggestion?.name) {
       marketStatus.textContent = 'OCR flojo — busco precio directo por la foto…';
     }
     runMarketLookup(false);
   };
+
+  function fileBlobOrState(o) {
+    return Boolean(o?.file || globalThis.__identifyState?.file);
+  }
 
   askingInput?.addEventListener('input', () => {
     paintDeal(globalThis.__identifyState?.marketResult || null);
@@ -619,19 +723,31 @@ function paintIdentifyMarketBody(host, result, probe) {
         rel: 'noopener noreferrer'
       }, [
         el('div', { className: 'market-match-main' }, [
-          el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
-          isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null,
+          el('strong', {
+            className: 'market-match-price',
+            text: formatMoneyDual(match.price, match.currency || currency)
+          }),
+          match.isMedianAnchor
+            ? el('span', { className: 'market-ref-badge', text: 'Mediana' })
+            : (isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null),
           !link.exact ? el('span', { className: 'market-ref-badge market-est-badge', text: 'Orientativo' }) : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
             className: 'muted small',
-            text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
+            text: [
+              match.source,
+              link.exact ? (match.priceType || 'listing') : 'orientativo · búsqueda',
+              match.note
+            ].filter(Boolean).join(' · ')
           }),
           el('span', { className: 'market-match-open', text: link.label })
         ])
       ]);
       card.addEventListener('click', (e) => {
         e.preventDefault();
+        if (!link.exact) {
+          toast('Orientativo: al buscar, el primer anuncio puede tener otro precio', 'info');
+        }
         if (!openExternal(href)) toast('No hay enlace válido para esta tienda', 'error');
       });
       list.append(card);
@@ -681,8 +797,24 @@ function summarize(result) {
   }));
 }
 
-function matchCard(match, previewUrl) {
-  return el('article', { className: `match-card level-${match.level}` }, [
+function matchCard(match, previewUrl, opts = {}) {
+  const sim = Number(match.similarity);
+  const hasSim = Number.isFinite(sim) && sim > 0;
+  const clear = Boolean(opts.clear);
+  const byName = Boolean(opts.byName || match.fromNameSearch);
+  const tag = byName
+    ? 'Solo por nombre (no visual)'
+    : clear
+      ? 'Posible coincidencia clara'
+      : match.preferredCandidate
+        ? 'Candidata (nombre + foto)'
+        : hasSim
+          ? 'Parecida — no confirmada'
+          : 'Revisar';
+  const levelClass = clear
+    ? 'level-high'
+    : (match.preferredCandidate || match.level === 'medium' ? 'level-medium' : 'level-low');
+  return el('article', { className: `match-card ${levelClass}` }, [
     el('div', { className: 'match-photo' }, [
       match.bestImageUrl
         ? el('img', {
@@ -696,13 +828,15 @@ function matchCard(match, previewUrl) {
         : el('div', { className: 'photo-placeholder', text: '?' })
     ]),
     el('div', { className: 'match-body' }, [
-      el('p', { className: 'match-tag', text: 'Posible coincidencia' }),
+      el('p', { className: 'match-tag', text: tag }),
       el('h3', { text: match.name }),
       el('p', { className: 'muted', text: [match.franchise, match.manufacturer, match.collectionName].filter(Boolean).join(' · ') }),
-      el('p', { className: 'sim-score', text: `${formatSimilarity(match.similarity)} de similitud visual` }),
+      hasSim
+        ? el('p', { className: 'sim-score', text: `${formatSimilarity(sim)} de similitud visual` })
+        : el('p', { className: 'sim-score muted', text: 'Sin % visual — coincidencia por texto' }),
       el('button', {
         type: 'button',
-        className: 'btn btn-primary btn-block',
+        className: clear ? 'btn btn-primary btn-block' : 'btn btn-ghost btn-block',
         text: 'Ver comparación',
         onClick: () => {
           globalThis.__identifyState = {

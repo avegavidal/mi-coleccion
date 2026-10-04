@@ -6,7 +6,10 @@
  */
 
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
+import { lookupTcgPlayerMarket } from './TcgPlayerProvider.js';
+import { lookupMercariJpMarket, lookupMercariUsMarket } from './MercariJpProvider.js';
 import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, isPlausibleListingUrl, matchBelongsToItem, normalizeMarketUrl } from './EbayLinkProvider.js';
+import { getUsdJpyRate } from '../utils/dom.js';
 
 function readGeminiApiKey() {
   try {
@@ -111,18 +114,36 @@ export function shouldStopMarketSearch(matches, item, attempt = 1) {
   if (isTcgCardItem(item)) {
     if (scored.some(isTcgMarketPriceMatch)) return true;
     if (usable.some((m) => isReliableMatch(m) && /tcgplayer/i.test(String(m.source || '')))) return true;
-    // Tras varios intentos, cualquier precio TCGPlayer/carta útil
     if (attempt >= 3 && usable.some((m) => /tcgplayer|cardmarket/i.test(String(m.source || '')))) return true;
     if (attempt >= 5 && usable.length >= 1) return true;
     return false;
   }
 
-  // Figuras / cajas: 1 coincidencia decente → mostrar ya (no exigir /itm/)
-  if (usable.length >= 1) return true;
-  if (scored.some(isReliableMatch)) return true;
-  // Último recurso tras varios intentos: cualquier precio > 0 no-snippet
-  if (attempt >= 4 && scored.some((m) => Number(m.price) > 0 && m.source !== 'web-snippet')) return true;
+  // Figuras: no parar con un score flojo (evita precio barato de otra pieza)
+  if (scored.some((m) => Number(m.price) > 0 && (m.priceVerified || (m.score || 0) >= 6))) {
+    return true;
+  }
+  const solid = scored.filter((m) =>
+    Number(m.price) > 0
+    && m.source !== 'web-snippet'
+    && m.priceType !== 'estimate'
+    && (m.score || 0) >= 4
+  );
+  if (solid.length >= 2 && pricesWithinBand(solid.map((m) => Number(m.price)), 0.4)) {
+    return true;
+  }
+  if (attempt >= 5 && usable.some((m) => (m.score || 0) >= 3)) return true;
+  if (attempt >= 5 && scored.some((m) => Number(m.price) > 0 && m.source !== 'web-snippet')) return true;
   return false;
+}
+
+/** Precios dentro de ±band de su mediana (band 0.4 = ±40%). */
+export function pricesWithinBand(prices, band = 0.4) {
+  const nums = (prices || []).map(Number).filter((p) => Number.isFinite(p) && p > 0);
+  if (nums.length < 2) return false;
+  const med = pickMedian(nums);
+  if (!med) return false;
+  return nums.every((p) => p <= med * (1 + band) && p >= med * (1 - band));
 }
 
 /**
@@ -187,23 +208,47 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     const useful = hasUsefulMarketMatches(list);
     const primaryQuery = queries[0] || '';
     const shopIds = tcg
-      ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold', 'ebay-active']
-      : ['ebay-sold', 'ebay-active', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
-    const ref = tcg ? pickTcgReferenceMatch(list) : null;
-    const refPrice = ref?.price != null ? Number(ref.price) : null;
-    const medianPool = list.filter((m) =>
-      m.priceType !== 'estimate' && m.source !== 'web-snippet'
-    );
-    const medianPrices = (medianPool.length ? medianPool : list).map((m) => m.price);
-    const median = refPrice != null && Number.isFinite(refPrice)
-      ? refPrice
+      ? ['tcgplayer', 'cardmarket', 'pricecharting', 'mercari-jp', 'ebay-sold', 'ebay-active']
+      : ['ebay-sold', 'ebay-active', 'mercari-jp', 'amiami', 'yahoo-jp', 'amazon-jp', 'amazon-us', 'mercari-us'];
+    const ref = tcg ? pickTcgReferenceMatch(list) : pickFigureReferenceMatch(list);
+    // Mediana solo de anuncios con URL de ficha (precio ≡ lo que hay al abrir)
+    const listingPool = list.filter(isPricedListingMatch);
+    const medianPrices = listingPool.map((m) => Number(m.price)).filter((p) => p > 0);
+    const median = ref?.medianPrice != null && Number.isFinite(Number(ref.medianPrice))
+      ? Number(ref.medianPrice)
       : (medianPrices.length ? pickMedian(medianPrices) : null);
-    const reliable = hasReliableMarketMatches(list, item);
-    const status = useful ? 'found' : (partial ? 'searching' : (errors.length ? 'error' : 'empty'));
+    // Preferir anuncios reales; estimates con “Buscar en…” van al final o se ocultan
+    let displayList = list;
+    if (listingPool.length) {
+      displayList = [
+        ...(ref && listingPool.some((m) => m.id === ref.id) ? [ref] : []),
+        ...listingPool.filter((m) => !ref || m.id !== ref.id)
+      ];
+      // Deduplicar por id
+      const seenIds = new Set();
+      displayList = displayList.filter((m) => {
+        const id = m.id || `${m.url}|${m.price}`;
+        if (seenIds.has(id)) return false;
+        seenIds.add(id);
+        return true;
+      });
+    } else {
+      // Solo orientativos: marcar claramente; no inventar referencia
+      displayList = list.map((m) => ({
+        ...m,
+        searchOnly: !isPlausibleListingUrl(m.url) && !m.linkExact && !m.urlTrusted
+      }));
+    }
+    const reliable = hasReliableMarketMatches(listingPool.length ? listingPool : list, item);
+    // Si hay errores de proxy pero también matches → found. Solo "error" si no quedó nada útil.
+    const status = useful
+      ? 'found'
+      : (partial ? 'searching' : (errors.length && !displayList.length ? 'error' : 'empty'));
+    const priced = displayList.filter((m) => Number(m.price) > 0);
     return {
       status,
       partial: Boolean(partial),
-      matches: useful ? list : (partial && list.length ? list : []),
+      matches: useful ? displayList.slice(0, limit) : (partial && displayList.length ? displayList.slice(0, limit) : []),
       queries,
       query: primaryQuery,
       imageUrl,
@@ -211,11 +256,11 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       tcg,
       reference: tcg ? 'tcgplayer-market' : 'median',
       referenceMatchId: ref?.id || null,
-      reliable,
-      sampleSize: useful || (partial && list.length) ? list.length : 0,
-      low: list.length ? Math.min(...list.map((m) => m.price)) : null,
-      median: list.length ? median : null,
-      high: list.length ? Math.max(...list.map((m) => m.price)) : null,
+      reliable: Boolean(reliable && listingPool.length),
+      sampleSize: useful || (partial && displayList.length) ? displayList.length : 0,
+      low: medianPrices.length ? Math.min(...medianPrices) : (priced.length ? Math.min(...priced.map((m) => m.price)) : null),
+      median: medianPrices.length || ref ? median : null,
+      high: medianPrices.length ? Math.max(...medianPrices) : (priced.length ? Math.max(...priced.map((m) => m.price)) : null),
       currency: 'USD',
       links: [
         ...buildVisualMarketLinks(imageUrl),
@@ -373,6 +418,131 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     emitPartial(kind === 'sold' ? 'eBay vendidos' : 'eBay');
   }
 
+  async function runTcgPass(attempt) {
+    if (!isTcgCardItem(item)) return;
+    const q = [
+      item?.item_number,
+      [item?.item_number, item?.franchise || item?.series].filter(Boolean).join(' '),
+      queries[0],
+      item?.name
+    ].map((s) => String(s || '').trim()).filter((s) => s.length >= 3);
+    const query = [...new Set(q)][0];
+    if (!query) return;
+
+    onProgress({
+      stage: 'tcgplayer',
+      attempt,
+      message: `Leyendo Market Price en TCGPlayer (“${query}”)…`
+    });
+    try {
+      const live = await Promise.race([
+        lookupTcgPlayerMarket(query, { limit: 6, signal }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout TCGPlayer')), 16000))
+      ]);
+      if (live?.matches?.length) {
+        matches = mergeMatches(matches, live.matches);
+        matches = scoreAndSortMatches(matches, item);
+        emitPartial('TCGPlayer (página)');
+      } else if (live?.note) {
+        errors.push(live.note);
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        if (signal?.aborted) throw err;
+        errors.push('TCGPlayer: red interrumpida');
+        return;
+      }
+      errors.push(`TCGPlayer: ${err.message || err}`);
+    }
+  }
+
+  /**
+   * Mercari JP: misma foto del ítem → Gemini identifica + busca anuncios;
+   * además scrape por keyword cuando ya hay nombre.
+   */
+  async function runMercariPass(attempt) {
+    const q = [
+      queries[0],
+      item?.name,
+      [item?.series, item?.character_name].filter(Boolean).join(' '),
+      [item?.manufacturer, item?.series].filter(Boolean).join(' ')
+    ].map((s) => String(s || '').trim()).filter((s) => s.length >= 3);
+    const query = [...new Set(q)][0] || '';
+
+    // 1) Con foto: Gemini + grounding centrado en Mercari JP (misma foto del identify)
+    if (apiKey && hasPhoto && attempt <= 2) {
+      onProgress({
+        stage: 'mercari',
+        attempt,
+        message: 'Mercari JP por la misma foto…'
+      });
+      try {
+        const preferModel = modelList[modelCursor % Math.max(modelList.length, 1)] || 'gemini-2.5-flash-lite';
+        modelCursor += 1;
+        const mercariMatches = await searchMercariJpWithGemini(item, {
+          apiKey,
+          imageUrl,
+          imageBlob,
+          query,
+          preferModel,
+          models: modelList,
+          signal
+        });
+        if (mercariMatches._imageAttached) photoGeminiOk = true;
+        if (mercariMatches.length) {
+          matches = mergeMatches(matches, mercariMatches);
+          matches = scoreAndSortMatches(matches, item);
+          emitPartial('Mercari JP (foto)');
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          if (signal?.aborted) throw err;
+          errors.push('Mercari foto: red interrumpida');
+        } else {
+          errors.push(`Mercari foto: ${err.message || err}`);
+        }
+      }
+    }
+
+    // 2) Scrape búsqueda Mercari US + JP por keyword (cuando hay texto útil)
+    if (!query) return;
+    onProgress({
+      stage: 'mercari',
+      attempt,
+      message: `Mercari US/JP (“${query.slice(0, 40)}”)…`
+    });
+    const mercariJobs = [
+      Promise.race([
+        lookupMercariUsMarket(query, { limit: 10, signal }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari US')), 16000))
+      ]).then((live) => ({ region: 'US', live })).catch((err) => ({ region: 'US', err })),
+      Promise.race([
+        lookupMercariJpMarket(query, { limit: 8, signal }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari JP')), 16000))
+      ]).then((live) => ({ region: 'JP', live })).catch((err) => ({ region: 'JP', err }))
+    ];
+    const mercariResults = await Promise.all(mercariJobs);
+    for (const row of mercariResults) {
+      if (row.err) {
+        if (row.err.name === 'AbortError') {
+          if (signal?.aborted) throw row.err;
+          errors.push(`Mercari ${row.region}: red interrumpida`);
+          continue;
+        }
+        errors.push(`Mercari ${row.region}: ${row.err.message || row.err}`);
+        continue;
+      }
+      const live = row.live;
+      if (live?.matches?.length) {
+        matches = mergeMatches(matches, live.matches);
+        matches = scoreAndSortMatches(matches, item);
+        emitPartial(`Mercari ${row.region}`);
+      } else if (live?.note) {
+        errors.push(live.note);
+      }
+    }
+  }
+
   async function runEbayPass(attempt) {
     if (!queries.length) return;
     onProgress({ stage: 'ebay', attempt, message: `Texto / eBay activo+vendidos (intento ${attempt})…` });
@@ -423,10 +593,21 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       onProgress({ stage: 'gemini', message: 'Sin API key de Gemini — precios automáticos limitados…' });
     }
 
-    // Foto (Gemini) y texto (eBay) a la vez — quien llegue primero se muestra
+    // Intento 1 con identidad floja + foto: solo foto (Gemini/Mercari), sin eBay por texto basura
+    const photoFirstPass = Boolean(hasPhoto && (preferPhoto || weakId) && attempt === 1);
     const tasks = [];
     if (apiKey) tasks.push(runGeminiPass(attempt));
-    if (queries.length) tasks.push(runEbayPass(attempt));
+    if (hasPhoto || (!photoFirstPass && queries.length)) {
+      const needMercari = attempt === 1
+        || (attempt === 2 && !matches.some((m) => /mercari/i.test(String(m.source || ''))));
+      if (needMercari) tasks.push(runMercariPass(attempt));
+    }
+    if (!photoFirstPass && queries.length) tasks.push(runEbayPass(attempt));
+    if (!photoFirstPass && isTcgCardItem(item) && (attempt === 1 || !matches.some(isTcgMarketPriceMatch))) {
+      tasks.push(runTcgPass(attempt));
+    } else if (photoFirstPass && isTcgCardItem(item)) {
+      tasks.push(runTcgPass(attempt));
+    }
     if (tasks.length) {
       const results = await Promise.allSettled(tasks);
       for (const r of results) {
@@ -488,26 +669,45 @@ function buildSearchQueries(item) {
   const parts = [];
 
   if (tcg) {
-    if (soft && (series || franchise || itemNumber)) {
-      parts.push([soft, series || franchise, itemNumber].filter(Boolean).join(' '));
+    // Código de carta primero — es lo que TCGPlayer/eBay indexan bien
+    if (itemNumber) {
+      parts.push(itemNumber);
+      parts.push([itemNumber, franchise || series || 'Union Arena'].filter(Boolean).join(' '));
+      parts.push(`${itemNumber} TCGPlayer`);
+      if (manufacturer) parts.push([manufacturer, itemNumber].join(' '));
     }
-    if (character && (series || franchise)) parts.push([character, series || franchise].join(' '));
-    if (soft) parts.push(`${soft} TCG`);
-    if (character && itemNumber) parts.push([character, itemNumber].join(' '));
+    if (soft && itemNumber && !soft.toUpperCase().includes(itemNumber.toUpperCase())) {
+      parts.push([soft, itemNumber].filter(Boolean).join(' '));
+    }
+    if (soft && (series || franchise) && !itemNumber) {
+      parts.push([soft, series || franchise].filter(Boolean).join(' '));
+    }
+    if (character && (series || franchise) && !itemNumber) {
+      parts.push([character, series || franchise].join(' '));
+    }
+    if (soft && !itemNumber) parts.push(`${soft} TCG`);
   } else {
-    // Nombre usable + buy → listados con precio (eBay/Amazon/Mercari)
-    // Usar soft (sin “Special Edition…”) para no buscar el título entero
+    // Anclar primero a fabricante + serie + personaje (menos ruido que “buy” genérico)
+    if (manufacturer && series && character) {
+      parts.push([manufacturer, series, character].join(' '));
+      parts.push([manufacturer, series, character, 'figure'].join(' '));
+    }
+    if (series && character) {
+      parts.push([series, character].join(' '));
+      parts.push([series, character, 'figure', 'buy'].join(' '));
+      parts.push([series, character, manufacturer].filter(Boolean).join(' '));
+    }
+    if (fullName && fullName.length >= 10) {
+      parts.push(fullName);
+      parts.push(`${fullName} buy`);
+    }
     const buyBase = soft || [series, character].filter(Boolean).join(' ') || fullName;
     if (buyBase) {
       parts.push(`${buyBase} buy`);
       parts.push(`${buyBase} for sale`);
     }
-    if (series && character) {
-      parts.push([series, character, 'figure', 'buy'].join(' '));
-      parts.push([series, character, manufacturer].filter(Boolean).join(' '));
-    }
     if (manufacturer && character) parts.push([manufacturer, character, 'figure', 'buy'].join(' '));
-    if (soft) parts.push(soft);
+    if (soft && soft !== fullName) parts.push(soft);
     if (soft && !/\b(figure|figura|banpresto|nendoroid|figma|glitter)\b/i.test(soft)) {
       parts.push(`${soft} figure buy`);
     }
@@ -548,6 +748,116 @@ function soften(name) {
 }
 
 /**
+ * Búsqueda centrada en Mercari JP usando la MISMA foto del identify.
+ * Gemini + Google Search → anuncios jp.mercari.com/item/…
+ * @param {object} item
+ * @param {{ apiKey: string, imageUrl?: string|null, imageBlob?: Blob|File|null, query?: string, preferModel?: string, models?: string[], signal?: AbortSignal }} opts
+ */
+export async function searchMercariJpWithGemini(item, opts) {
+  const apiKey = opts.apiKey;
+  const query = String(opts.query || item?.name || '').trim();
+  const meta = [
+    item?.name && `Name: ${item.name}`,
+    item?.manufacturer && `Manufacturer: ${item.manufacturer}`,
+    item?.series && `Series: ${item.series}`,
+    item?.character_name && `Character: ${item.character_name}`,
+    item?.item_number && `Item #: ${item.item_number}`,
+    item?.franchise && `Franchise: ${item.franchise}`
+  ].filter(Boolean).join('\n');
+
+  const prompt = `You are a Mercari Japan (jp.mercari.com) price finder for collectible figures / cards.
+A product PHOTO is attached — it is the SAME photo the user just took. Find matching listings ON Mercari JP.
+
+Item data (may be incomplete; trust the PHOTO):
+${meta || '(identify from PHOTO)'}
+Search hint: ${query || '(from PHOTO)'}
+
+Return ONLY valid JSON:
+{
+  "found": true|false,
+  "matches": [
+    {
+      "title": "listing title",
+      "price": 49.99,
+      "currency": "USD",
+      "source": "mercari",
+      "priceType": "listing",
+      "url": "https://jp.mercari.com/item/m........",
+      "note": "¥xxxx on Mercari JP"
+    }
+  ]
+}
+Rules:
+- ONLY Mercari JP results (source must be "mercari"). Prefer jp.mercari.com/item/… URLs.
+- Convert yen to USD in "price"; put original yen in "note".
+- 1–6 matches max. Empty array if none.
+- NEVER invent item IDs. If unsure of the exact /item/ URL, use https://jp.mercari.com/search?keyword=...&status=on_sale and set priceType "estimate".
+- price is ALWAYS USD after converting from yen (e.g. ¥6200 → ~41.5 USD). Never put 6200 as USD.
+- Match the SAME product visible in the photo.`;
+
+  const parts = [{ text: prompt }];
+  let imageAttached = false;
+  try {
+    const imgPart = opts.imageBlob
+      ? await blobToInlinePart(opts.imageBlob)
+      : (opts.imageUrl ? await fetchImageAsInlinePart(opts.imageUrl) : null);
+    if (imgPart) {
+      parts.push(imgPart);
+      imageAttached = true;
+    }
+  } catch (err) {
+    console.warn('[mercari] no se pudo adjuntar foto', err);
+  }
+  if (!imageAttached) {
+    throw new Error('Sin foto para Mercari JP');
+  }
+
+  const {
+    geminiGenerateContent,
+    geminiTextFromResponse,
+    extractGroundingUrls,
+    assignGroundingUrlsToMatches
+  } = await import('../services/geminiClient.js');
+
+  const bodyWithTools = {
+    contents: [{ parts }],
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature: 0.1 }
+  };
+
+  const out = await geminiGenerateContent(apiKey, bodyWithTools, {
+    signal: opts.signal,
+    models: opts.models,
+    preferModel: opts.preferModel,
+    purpose: 'vision'
+  });
+  const text = geminiTextFromResponse(out.data);
+  let parsed = parseGeminiMarketMatches(text, query);
+  const grounded = extractGroundingUrls(out.data);
+  if (grounded.length) {
+    parsed = assignGroundingUrlsToMatches(parsed, grounded);
+  }
+  parsed = finalizeGeminiMatchUrls(parsed, query);
+  // Forzar source mercari y filtrar no-mercari
+  const list = parsed
+    .map((m) => {
+      const url = String(m.url || '');
+      const isMercari = /mercari\.com/i.test(url) || /mercari/i.test(String(m.source || ''));
+      if (!isMercari && url && !/jp\.mercari\.com\/search/i.test(url)) return null;
+      return {
+        ...m,
+        source: 'mercari',
+        id: m.id || `mercari-gemini-${(m.price || 0)}-${(m.title || '').slice(0, 24)}`,
+        note: m.note || 'Mercari JP (foto)'
+      };
+    })
+    .filter(Boolean);
+  list._imageAttached = true;
+  list._model = out.model;
+  return list;
+}
+
+/**
  * @param {object} item
  * @param {{ apiKey: string, imageUrl?: string|null, imageBlob?: Blob|File|null, queries: string[], limit?: number, preferModel?: string, models?: string[], signal?: AbortSignal, photoFirst?: boolean, purpose?: 'vision'|'price'|'general' }} opts
  * @returns {Promise<MarketMatch[]>}
@@ -570,21 +880,24 @@ export async function searchMarketWithGemini(item, opts) {
   const photoFirst = Boolean(opts.photoFirst);
   const photoBlock = photoFirst
     ? `CRITICAL — PHOTO FIRST:
-- A product PHOTO is attached. Identify the EXACT product from the image (box text, logos, character, line like Glitter & Glamours / Nendoroid / G×materia).
-- Ignore weak/empty Item data if it conflicts with what you see on the box.
-- Then search LIVE web for that product's current BUY / FOR SALE prices on eBay, AmiAmi, Mercari, Amazon, Yahoo JP.
-- Put the official product title in each match "title".
-- Prefer URLs that are real listing pages (ebay.com/itm/…, amiami detail, mercari/item).`
+- A product PHOTO is attached. Identify the EXACT product from the image.
+- For TRADING CARDS: read the collector code printed on the card (e.g. EXR-009, OP01-001) and search by THAT CODE on TCGPlayer / eBay.
+- For FIGURES: read box text, logos, line (Glitter & Glamours / Nendoroid / G×materia).
+- Ignore weak/empty Item data if it conflicts with what you see.
+- Prefer real listing URLs. NEVER invent ebay.com/itm/ IDs — if unsure, omit url or use a search page.`
     : '';
 
   const prompt = `You are a collectible market price assistant (${tcg ? 'TRADING CARD / TCG specialist' : 'ANIME FIGURE / prize figure specialist'}).
 ${photoBlock}
 ${tcg
     ? `For TCG cards, the PRIMARY reference price is TCGPlayer "Market Price" (NOT Low Price, NOT Mid listing, NOT listed asking price).
-Search TCGPlayer first and return the Market Price for the exact card (same set + collector number + finish/foil when visible).
-You may also include Cardmarket trend / PriceCharting as secondary options, clearly labeled.`
+Search TCGPlayer first for the EXACT collector number from the photo/Item # (e.g. EXR-009).
+Every match title SHOULD include that collector number when known.
+You may also include Cardmarket trend / PriceCharting as secondary options, clearly labeled.
+If Item # is present, REJECT results for different card numbers.`
     : `This item is a FIGURE (Banpresto / Bandai Spirits / Good Smile / scale / prize), NOT a trading card.
-Search eBay sold/active, AmiAmi, Mercari, Yahoo Auctions JP, Amazon for the FIGURE listing.
+Search eBay sold/active, AmiAmi, Mercari JP (jp.mercari.com), Yahoo Auctions JP, Amazon for the FIGURE listing.
+When a PHOTO is attached, use it to find the SAME figure on Mercari JP — include source "mercari" with jp.mercari.com/item/… URLs and yen→USD prices.
 IMPORTANT search style: use the exact product title + "buy" or "for sale" (e.g. "BLEACH Glitter & Glamours Nemu Kurotsuchi buy") to find listings with prices.
 DO NOT return TCGPlayer / Cardmarket / PriceCharting card prices even if a same-character TCG card exists.
 Include "figure", "Banpresto", or the figure line (e.g. Glitter & Glamours) in the match title when known.`}
@@ -592,14 +905,14 @@ Include "figure", "Banpresto", or the figure line (e.g. Glitter & Glamours) in t
 Item data:
 ${meta || '(use the PHOTO — data may be empty or OCR noise)'}
 
-Search hints: ${searchHint || '(derive search terms from the PHOTO)'}
+Search hints: ${searchHint || '(derive search terms from the PHOTO — especially collector codes)'}
 
 Return ONLY valid JSON (no markdown) with this shape:
 {
   "found": true|false,
   "matches": [
     {
-      "title": "product title (figure line + character, or card set/number if card)",
+      "title": "product title (MUST include collector code for cards, e.g. EXR-009)",
       "price": 49.99,
       "currency": "USD",
       "source": "${tcg ? 'tcgplayer|cardmarket|pricecharting|ebay|other' : 'ebay|amazon|mercari|amiami|yahoo|other'}",
@@ -610,15 +923,18 @@ Return ONLY valid JSON (no markdown) with this shape:
   ]
 }
 Rules:
-- price must be a number in USD when possible (convert EUR/JPY if needed; note original in "note").
+- price must be a number in USD (never put yen amounts like 6200 in "price" with currency USD — convert JPY→USD first; put original yen only in "note").
 - Include 1–8 matches if found; empty array if none.
 - CRITICAL: "price" MUST be the price of the exact listing/product at "url". Do not invent prices.
-- Prefer REAL listing URLs: ebay.com/itm/..., amazon.com/dp/..., mercari.com/item/..., amiami.com/.../detail/...${tcg ? ', tcgplayer.com/product/...' : ''}.
+- Prefer REAL listing URLs: ebay.com/itm/..., amazon.com/dp/..., jp.mercari.com/item/..., mercari.com/item/..., amiami.com/.../detail/...${tcg ? ', tcgplayer.com/product/...' : ''}.
+- For Japan secondhand figures, include Mercari JP (jp.mercari.com) when possible.
+- NEVER invent or guess ebay.com/itm/######## URLs. If you do not have a verified listing URL, leave url empty or use a store SEARCH url — the app will build a safe search.
 - If you cannot find the listing URL, set priceType to "estimate" and say so in note. Still set source correctly.
 ${tcg
     ? `- CRITICAL: at least one match MUST be TCGPlayer Market Price when available, with "source":"tcgplayer" and "priceType":"market" and note "TCGPlayer Market Price".
 - Prefer Near Mint Market Price; put foil / alternate art as separate matches.
-- Do NOT use Low Price as the main reference.`
+- Do NOT use Low Price as the main reference.
+- Match the SAME collector number as Item # / photo code.`
     : `- If multiple variants exist (A/B colorways, open box vs sealed), include several so the user can pick.
 - Never substitute a trading-card price for a figure.`}
 - Never claim a store listing price without a matching product/listing url when one exists.`;
@@ -680,6 +996,7 @@ ${tcg
     if (grounded.length) {
       parsed = assignGroundingUrlsToMatches(parsed, grounded);
     }
+    parsed = finalizeGeminiMatchUrls(parsed, searchHint);
     parsed._imageAttached = imageAttached;
     parsed._model = out.model;
     if (parsed.length) return parsed;
@@ -695,7 +1012,7 @@ ${tcg
   try {
     const out = await geminiGenerateContent(apiKey, bodyPlain, genOpts);
     const text = geminiTextFromResponse(out.data);
-    const parsed = parseGeminiMarketMatches(text, searchHint);
+    let parsed = finalizeGeminiMatchUrls(parseGeminiMarketMatches(text, searchHint), searchHint);
     parsed._imageAttached = imageAttached;
     parsed._model = out.model;
     return parsed;
@@ -713,6 +1030,66 @@ ${tcg
  * @param {string} searchHint
  * @returns {MarketMatch[]}
  */
+/**
+ * Corrige yen mal etiquetado como USD (p. ej. 6200 → ~$41.5).
+ * @param {{ price?: number, currency?: string, source?: string, note?: string, priceType?: string }} m
+ * @returns {{ price: number, currency: string, originalYen?: number, note: string, skipped?: boolean }}
+ */
+export function normalizeMatchPriceToUsd(m) {
+  let price = Number(m?.price);
+  if (!Number.isFinite(price) || price <= 0) {
+    return { price: 0, currency: 'USD', note: String(m?.note || ''), skipped: true };
+  }
+  let currency = String(m?.currency || 'USD').toUpperCase();
+  if (currency === 'YEN') currency = 'JPY';
+  const note = String(m?.note || '');
+  const source = String(m?.source || '').toLowerCase();
+  const blob = `${source} ${note}`.toLowerCase();
+  const rate = getUsdJpyRate() || 149;
+
+  const yenFromNote = (() => {
+    const a = note.match(/¥\s*([\d,]+)/);
+    if (a) return Number(String(a[1]).replace(/,/g, ''));
+    const b = note.match(/([\d,]+)\s*(?:JPY|円|yen)\b/i);
+    if (b) return Number(String(b[1]).replace(/,/g, ''));
+    return null;
+  })();
+
+  const looksJpMarket = /mercari|yahoo|amiami|mandarake|\.jp\b|円/.test(blob);
+  const integerLike = Math.abs(price - Math.round(price)) < 0.001;
+  // IA suele pegar yenes (6200, 9800…) en "price" con currency USD
+  const yenAsUsd = currency === 'USD'
+    && integerLike
+    && price >= 1000
+    && price <= 2_000_000
+    && (
+      (yenFromNote != null && Math.abs(yenFromNote - price) < 1)
+      || looksJpMarket
+      || (String(m?.priceType || '').toLowerCase() === 'estimate' && price >= 2000)
+    );
+
+  if (currency === 'JPY' || yenAsUsd) {
+    const yen = currency === 'JPY' ? price : price;
+    const usd = Math.round((yen / rate) * 100) / 100;
+    if (!(usd > 0)) return { price: 0, currency: 'USD', note, skipped: true };
+    return {
+      price: usd,
+      currency: 'USD',
+      originalYen: yen,
+      note: note
+        ? `${note} · convertido ¥${yen.toLocaleString('ja-JP')}→USD`
+        : `Convertido ¥${yen.toLocaleString('ja-JP')}→USD`
+    };
+  }
+
+  // Estimates absurdos sin scrapear (p. ej. $6200 figura prize)
+  if (String(m?.priceType || '').toLowerCase() === 'estimate' && price > 2500 && !looksJpMarket) {
+    return { price: 0, currency: 'USD', note, skipped: true };
+  }
+
+  return { price, currency: currency === 'USD' ? 'USD' : currency, note };
+}
+
 export function parseGeminiMarketMatches(text, searchHint = '') {
   const parsed = parseJsonObject(text);
   if (!parsed) throw new Error('Gemini no devolvió JSON de precios');
@@ -722,48 +1099,80 @@ export function parseGeminiMarketMatches(text, searchHint = '') {
   const out = [];
   for (let i = 0; i < raw.length; i++) {
     const m = raw[i] || {};
-    const price = Number(m.price);
-    if (!Number.isFinite(price) || price <= 0) continue;
     const title = String(m.title || searchHint || 'Coincidencia').trim();
     const source = String(m.source || 'web');
     const rawUrl = typeof m.url === 'string' ? m.url.trim() : '';
     const normUrl = normalizeMarketUrl(rawUrl);
-    void normUrl; // Gemini URLs no se abren (404); solo informativo
     let priceType = String(m.priceType || inferPriceType(m)).toLowerCase();
-    if (priceType === 'listing') {
-      // Sin anuncio verificado, el precio es orientativo
+    // Gemini no verifica el precio en la página: siempre estimate
+    if (priceType === 'listing' || priceType === 'market') {
       priceType = 'estimate';
     }
     const noteBase = m.note
       ? String(m.note)
-      : (priceType === 'market'
-        ? 'TCGPlayer Market Price'
-        : 'Precio orientativo — el enlace busca esta pieza en la tienda');
-    const searchTitle = sanitizeMatchTitle(title);
-    // Nunca usar /itm/ inventados por Gemini (dan Not Found). Siempre búsqueda real.
-    const openUrl = storeLinkForMatch({
+      : 'Precio orientativo (IA) — no leído de la ficha';
+    const normalized = normalizeMatchPriceToUsd({
+      price: m.price,
+      currency: m.currency,
       source,
-      title: searchTitle || title,
-      url: '',
-      query: searchHint,
-      price,
-      urlTrusted: false
+      note: noteBase,
+      priceType
     });
+    if (normalized.skipped || !(normalized.price > 0)) continue;
+    const price = normalized.price;
+    const searchTitle = sanitizeMatchTitle(title);
+    // eBay /itm/ de Gemini suelen 404 → no usar. Mercari/AmiAmi plausibles se dejan
+    // vacíos para que el grounding pueda rellenar; si no, búsqueda (sin fingir precio de ficha).
+    const ebayFake = /ebay\./i.test(normUrl || '') && /\/itm\//i.test(normUrl || '');
+    const keepUrl = normUrl && isPlausibleListingUrl(normUrl) && !ebayFake ? normUrl : '';
     out.push({
       id: `gem-${i}-${price}-${title.slice(0, 24)}`,
       title: searchTitle || title,
       price,
-      currency: String(m.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : String(m.currency || 'USD'),
+      currency: 'USD',
       source,
       priceType,
+      priceVerified: false,
+      url: keepUrl,
+      linkExact: Boolean(keepUrl),
+      urlTrusted: false,
+      query: searchHint,
+      note: normalized.note || noteBase,
+      originalYen: normalized.originalYen,
+      searchOnly: !keepUrl
+    });
+  }
+  // finalizeGeminiMatchUrls se llama DESPUÉS del grounding (searchMarketWithGemini)
+  return out;
+}
+
+/**
+ * Tras grounding: si no hay URL de ficha, poner búsqueda (precio sigue siendo orientativo).
+ * @param {MarketMatch[]} matches
+ * @param {string} searchHint
+ */
+export function finalizeGeminiMatchUrls(matches, searchHint = '') {
+  return (matches || []).map((m) => {
+    if (m.url && isPlausibleListingUrl(m.url)) {
+      return { ...m, linkExact: true, searchOnly: false };
+    }
+    const openUrl = storeLinkForMatch({
+      source: m.source,
+      title: m.title,
+      url: '',
+      query: searchHint || m.query,
+      price: m.price,
+      urlTrusted: false
+    });
+    return {
+      ...m,
       url: openUrl,
       linkExact: false,
       urlTrusted: false,
-      query: searchHint,
-      note: noteBase
-    });
-  }
-  return out;
+      searchOnly: true,
+      note: m.note || 'Solo búsqueda — el precio puede no coincidir con el primer anuncio'
+    };
+  });
 }
 
 function sanitizeMatchTitle(title) {
@@ -784,14 +1193,13 @@ function inferPriceType(m) {
   return 'listing';
 }
 
-/** True si el match es el Market Price de TCGPlayer (referencia). */
+/** True si el match es el Market Price de TCGPlayer verificado (leído de la página). */
 export function isTcgMarketPriceMatch(m) {
   if (!m) return false;
-  const type = String(m.priceType || '').toLowerCase();
-  const note = `${m.note || ''} ${m.title || ''}`.toLowerCase();
-  const fromTcg = String(m.source || '').toLowerCase() === 'tcgplayer';
-  if (type === 'market' && (fromTcg || /tcgplayer/.test(note))) return true;
-  if (fromTcg && /market\s*price|precio\s*(de\s*)?mercado/.test(note)) return true;
+  if (m.priceVerified === true && String(m.source || '').toLowerCase() === 'tcgplayer') {
+    return String(m.priceType || '').toLowerCase() === 'market'
+      || /market\s*price/i.test(String(m.note || ''));
+  }
   return false;
 }
 
@@ -810,6 +1218,56 @@ export function pickTcgReferenceMatch(matches) {
     return [...tcg].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
   }
   return list[0] || null;
+}
+
+/**
+ * Anuncio con precio + URL de ficha real (no búsqueda). Precio debe coincidir al abrir.
+ * @param {MarketMatch} m
+ */
+export function isPricedListingMatch(m) {
+  if (!m || !(Number(m.price) > 0)) return false;
+  if (m.source === 'web-snippet') return false;
+  const url = String(m.url || '');
+  const exact = Boolean(m.urlTrusted || m.linkExact || isPlausibleListingUrl(url));
+  if (!exact) return false;
+  // Estimates de IA sin scrapear: no anclar precio a un /item/ dudoso
+  if (m.priceType === 'estimate' && !m.urlTrusted && !m.priceVerified) return false;
+  return true;
+}
+
+/**
+ * Referencia de figuras: mediana de anuncios reales → enlace al ítem más cercano a esa mediana.
+ * El precio mostrado es el del anuncio (así coincide al abrir el link).
+ * @param {MarketMatch[]} matches
+ */
+export function pickFigureReferenceMatch(matches) {
+  const list = matches || [];
+  const solid = list.filter(isPricedListingMatch);
+  if (solid.length >= 2) {
+    const med = pickMedian(solid.map((m) => Number(m.price)));
+    if (med != null) {
+      const closest = [...solid].sort((a, b) =>
+        Math.abs(Number(a.price) - med) - Math.abs(Number(b.price) - med)
+        || (b.score || 0) - (a.score || 0)
+      )[0];
+      return {
+        ...closest,
+        isMedianAnchor: true,
+        medianPrice: med,
+        medianSampleSize: solid.length,
+        note: `Mediana ~$${Number(med).toFixed(2)} de ${solid.length} anuncios · enlace al más cercano ($${Number(closest.price).toFixed(2)})`
+      };
+    }
+  }
+  if (solid.length === 1) {
+    return { ...solid[0], isMedianAnchor: false, medianSampleSize: 1 };
+  }
+  const verified = list.filter((m) => m.priceVerified && Number(m.price) > 0 && isPricedListingMatch(m));
+  if (verified.length) {
+    return [...verified].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  }
+  // Sin anuncios reales: no usar estimates con link de búsqueda como referencia
+  return null;
 }
 
 async function blobToInlinePart(blob) {
@@ -872,6 +1330,8 @@ export function mergeMatches(a, b) {
  */
 export function scoreAndSortMatches(matches, item) {
   const tcgItem = isTcgCardItem(item);
+  const codeRaw = String(item?.item_number || '').trim().toUpperCase();
+  const codeNorm = codeRaw.replace(/[^A-Z0-9]/g, '');
   const tokens = [
     item?.series, item?.character_name, item?.character, item?.manufacturer,
     item?.item_number, item?.franchise, ...(String(item?.name || '').split(/\s+/))
@@ -884,12 +1344,29 @@ export function scoreAndSortMatches(matches, item) {
       const title = String(m.title || '').toLowerCase();
       const src = String(m.source || '').toLowerCase();
       const blob = `${title} ${src} ${m.note || ''}`.toLowerCase();
+      const titleNorm = title.replace(/[^a-z0-9]/g, '');
       let score = 0;
       for (const t of tokens) {
         if (title.includes(t.toLowerCase())) score += 2;
       }
+      // Código de carta: bonus fuerte si coincide; penaliza si es otra carta
+      if (codeNorm.length >= 4) {
+        if (title.includes(codeRaw.toLowerCase()) || titleNorm.includes(codeNorm.toLowerCase())) {
+          score += 18;
+        } else if (tcgItem) {
+          score -= 14;
+        }
+      }
+      // Market Price leído de la página (no IA)
+      if (m.priceVerified && isTcgMarketPriceMatch(m)) score += 30;
+      else if (m.priceVerified) score += 12;
       if (m.linkExact || isDirectListingUrl(m.url)) score += 4;
+      if (m.urlTrusted && m.priceVerified) score += 6;
+      if (/mercari\.com\/(?:us\/)?item\//i.test(String(m.url || '')) && m.urlTrusted) score += 3;
       if (m.priceType === 'estimate') score -= 1;
+      // Yen-as-USD ya convertido suele quedar bajo; estimates sin ficha pierden vs scrape US
+      if (m.priceType === 'estimate' && Number(m.price) > 800) score -= 3;
+      if (m.priceVerified !== true && /tcgplayer/i.test(src) && m.priceType === 'estimate') score -= 4;
       if (m.priceType === 'sold') score += 1; // vendidos ≈ precio real de mercado
       if (src === 'web-snippet') score -= 6;
       if (isTcgMarketPriceMatch(m)) score += 6;
@@ -948,9 +1425,17 @@ export function filterDisplayMatches(matches, item) {
   const list = matches || [];
   if (!list.length) return list;
   const tcgItem = isTcgCardItem(item);
+  const solidId = item && !identityWeak(item);
+  const hasListings = list.some(isPricedListingMatch);
   const filtered = list.filter((m) => {
     const blob = `${m.title || ''} ${m.source || ''} ${m.note || ''}`.toLowerCase();
-    // Descartar anuncios de OTRA figura/personaje
+    // Si hay anuncios reales, ocultar estimates solo-búsqueda (precio ≠ lo del link)
+    if (hasListings && !isPricedListingMatch(m) && (m.priceType === 'estimate' || m.source === 'web-snippet')) {
+      return false;
+    }
+    if (solidId && item && !matchBelongsToItem(m, item)) {
+      return false;
+    }
     if (item && !matchBelongsToItem(m, item) && (m.score || 0) < 6) {
       return false;
     }
@@ -963,9 +1448,13 @@ export function filterDisplayMatches(matches, item) {
     if ((m.score || 0) < 0 && list.some((x) => (x.score || 0) >= 3)) return false;
     return true;
   });
-  const keep = filtered.length ? filtered : list.filter((m) => !item || matchBelongsToItem(m, item) || (m.score || 0) >= 4);
-  const finalKeep = keep.length ? keep : list;
-  if (finalKeep.some(isReliableMatch)) {
+  const keep = filtered.length
+    ? filtered
+    : (solidId
+      ? list.filter((m) => matchBelongsToItem(m, item) && (!hasListings || isPricedListingMatch(m)))
+      : list.filter((m) => !item || matchBelongsToItem(m, item) || (m.score || 0) >= 4));
+  const finalKeep = keep.length ? keep : (solidId ? [] : list);
+  if (finalKeep.some(isPricedListingMatch) || finalKeep.some(isReliableMatch)) {
     return finalKeep.filter((m) => m.source !== 'web-snippet');
   }
   return finalKeep;

@@ -6,7 +6,7 @@ import { classifyDeal } from '../services/marketPriceService.js';
 export async function renderDashboard(root) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
-      el('h1', { text: 'Inicio' }),
+      el('h1', { text: 'Mi Colección' }),
       el('p', { className: 'page-sub', text: 'Tu vitrina, fotos y mercado en un solo lugar.' })
     ]),
     el('a', { href: '#/identify', className: 'identify-hero-btn' }, [
@@ -16,7 +16,7 @@ export async function renderDashboard(root) {
         el('small', { text: 'Toma una foto y busca coincidencias en tu colección' })
       ])
     ]),
-    el('div', { className: 'stats-grid', id: 'dash-stats' }, [
+    el('div', { className: 'stats-grid stats-compact', id: 'dash-stats' }, [
       el('div', { className: 'stat-card skeleton', text: '…' })
     ]),
     el('section', { className: 'section' }, [
@@ -28,15 +28,14 @@ export async function renderDashboard(root) {
     ])
   ]));
 
+  const statsEl = root.querySelector('#dash-stats');
+  const recentHost = root.querySelector('#dash-recent');
   try {
     const stats = await getDashboardStats();
-    const statsEl = root.querySelector('#dash-stats');
     statsEl.innerHTML = '';
     const cards = [
       { label: 'Piezas', value: stats.totalPieces, href: '#/collection' },
-      { label: 'Registros', value: stats.totalItems, href: '#/collection' },
       { label: 'Categorías', value: stats.totalCollections, href: '#/collections' },
-      { label: 'Duplicados', value: stats.duplicatesCount, href: '#/duplicates' },
       { label: 'Wishlist', value: stats.wishlistCount, href: '#/wishlist' }
     ];
     for (const c of cards) {
@@ -48,7 +47,6 @@ export async function renderDashboard(root) {
       );
     }
 
-    const recentHost = root.querySelector('#dash-recent');
     if (!stats.recent.length) {
       recentHost.replaceWith(
         emptyState(
@@ -60,16 +58,24 @@ export async function renderDashboard(root) {
       return;
     }
 
-    const ids = stats.recent.map((r) => r.id);
-    const filtered = await listItems({ ids, sort: 'newest' });
-    const withThumbs = await enrichItemsWithThumbs(filtered);
-    withThumbs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-    for (const item of withThumbs.slice(0, 6)) {
-      recentHost.append(itemCard(item));
+    try {
+      const ids = stats.recent.map((r) => r.id);
+      const filtered = await listItems({ ids, sort: 'newest' });
+      const withThumbs = await enrichItemsWithThumbs(filtered);
+      withThumbs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      recentHost.innerHTML = '';
+      for (const item of withThumbs.slice(0, 6)) {
+        recentHost.append(itemCard(item));
+      }
+    } catch (listErr) {
+      recentHost.innerHTML = '';
+      recentHost.append(el('p', {
+        className: 'error-text',
+        text: listErr.message || 'No se pudieron cargar las piezas recientes'
+      }));
     }
   } catch (err) {
-    root.querySelector('#dash-stats').innerHTML = `<p class="error-text">${err.message}</p>`;
+    statsEl.innerHTML = `<p class="error-text">${err.message}</p>`;
   }
 }
 
@@ -78,31 +84,86 @@ export function itemCard(item) {
     ? classifyDeal(item.purchase_price, item.market_price_median)
     : null;
   const showDeal = deal && deal.code !== 'unknown_purchase' && deal.code !== 'unknown_market';
+  const path = item.thumbPath || (item.item_images || [])[0]?.storage_path || '';
+
+  const photo = el('div', { className: 'item-card-photo' });
+  if (item.thumbUrl) {
+    const img = document.createElement('img');
+    img.src = item.thumbUrl;
+    img.alt = item.name || '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.width = 360;
+    img.height = 480;
+    img.fetchPriority = 'low';
+    if (path) img.dataset.storagePath = path;
+    img.addEventListener('load', () => {
+      if (!path) return;
+      import('../services/imageService.js').then((m) => m.markThumbReady(path)).catch(() => {});
+    }, { once: true });
+    img.addEventListener('error', () => {
+      const ph = el('div', {
+        className: 'photo-placeholder photo-loading',
+        dataset: path ? { storagePath: path } : undefined,
+        text: '…'
+      });
+      img.replaceWith(ph);
+      if (path) {
+        import('../services/imageService.js')
+          .then((m) => m.ensureRemoteThumb(path))
+          .then((url) => {
+            if (!url || !ph.isConnected) return;
+            const next = document.createElement('img');
+            next.src = url;
+            next.alt = item.name || '';
+            next.loading = 'lazy';
+            next.decoding = 'async';
+            next.width = 360;
+            next.height = 480;
+            next.dataset.storagePath = path;
+            next.dataset.thumbReady = '1';
+            ph.replaceWith(next);
+          })
+          .catch(() => {});
+      }
+    }, { once: true });
+    photo.append(img);
+  } else if (path) {
+    photo.append(el('div', {
+      className: 'photo-placeholder photo-loading',
+      dataset: { storagePath: path },
+      text: '…'
+    }));
+    import('../services/imageService.js')
+      .then((m) => m.scheduleThumbBackfill([path]))
+      .catch(() => {});
+  } else {
+    photo.append(el('div', { className: 'photo-placeholder', text: 'Sin foto' }));
+  }
 
   return el('a', { href: `#/item/${item.id}`, className: 'item-card' }, [
-    el('div', {
-      className: 'item-card-photo',
-      html: item.thumbUrl
-        ? `<img src="${item.thumbUrl}" alt="${(item.name || '').replace(/"/g, '')}" loading="lazy" decoding="async" fetchpriority="low" width="360" height="480">`
-        : '<div class="photo-placeholder">Sin foto</div>'
-    }),
+    photo,
     el('p', { className: 'qty-badge', text: `×${item.quantity || 1}` }),
     el('div', { className: 'item-card-body' }, [
-      el('h3', { text: item.name }),
-      el('p', { className: 'muted', text: item.collections?.name || 'Sin categoría' }),
-      item.manufacturer ? el('p', { className: 'card-meta', text: item.manufacturer }) : null,
-      el('p', {
-        className: `card-market${item.market_price_median == null ? ' hidden' : ''}`,
-        dataset: { marketFor: item.id },
-        text: item.market_price_median != null
-          ? formatMoneyDual(item.market_price_median, item.market_currency || 'USD')
-          : ''
-      }),
-      el('p', {
-        className: `card-deal${showDeal ? ` deal-${deal.code}` : ' hidden'}`,
-        dataset: { dealFor: item.id },
-        text: showDeal ? deal.label : ''
-      })
+      el('div', { className: 'item-card-main' }, [
+        el('h3', { text: item.name }),
+        el('p', { className: 'muted', text: item.collectionNames || item.collections?.name || 'Sin categoría' }),
+        item.manufacturer ? el('p', { className: 'card-meta', text: item.manufacturer }) : null
+      ]),
+      el('div', { className: 'item-card-aside' }, [
+        el('p', {
+          className: `card-market${item.market_price_median == null ? ' hidden' : ''}`,
+          dataset: { marketFor: item.id },
+          text: item.market_price_median != null
+            ? formatMoneyDual(item.market_price_median, item.market_currency || 'USD')
+            : ''
+        }),
+        el('p', {
+          className: `card-deal${showDeal ? ` deal-${deal.code}` : ' hidden'}`,
+          dataset: { dealFor: item.id },
+          text: showDeal ? deal.label : ''
+        })
+      ])
     ])
   ]);
 }

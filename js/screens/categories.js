@@ -7,7 +7,8 @@ import {
   deleteCollection,
   getCollection,
   listItems,
-  updateItem
+  addItemToCollection,
+  removeItemFromCollection
 } from '../services/collectionService.js';
 import { getSignedUrls } from '../services/imageService.js';
 import { itemCard } from './dashboard.js';
@@ -23,7 +24,7 @@ export async function renderCollectionsManage(root) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Categorías' }),
-      el('p', { className: 'page-sub', text: 'Organiza tus figuras y edita a cuáles pertenece cada una.' })
+      el('p', { className: 'page-sub', text: 'Una figura puede estar en varias categorías a la vez.' })
     ]),
     el('form', { id: 'new-cat', className: 'category-create stack-form' }, [
       el('label', {}, [
@@ -92,7 +93,9 @@ export async function renderCollectionsManage(root) {
       );
     }
 
-    const uncategorized = (await listItems()).filter((i) => !i.collection_id);
+    const uncategorized = (await listItems({ sort: 'name' })).filter(
+      (i) => !(i.collection_ids || []).length && !i.collection_id
+    );
     if (uncategorized.length) {
       grid.append(
         el('a', { href: '#/category/none', className: 'category-card' }, [
@@ -131,10 +134,10 @@ export async function renderCategoryDetail(root, params) {
     }
   }
 
-  const allItems = await listItems();
+  const allItems = await listItems({ sort: 'name' });
   const members = isNone
-    ? allItems.filter((i) => !i.collection_id)
-    : allItems.filter((i) => i.collection_id === id);
+    ? allItems.filter((i) => !(i.collection_ids || []).length && !i.collection_id)
+    : allItems.filter((i) => (i.collection_ids || []).includes(id) || i.collection_id === id);
   const withThumbs = await enrichItemsWithThumbs(members);
 
   root.append(el('div', { className: 'page' }, [
@@ -226,7 +229,7 @@ export async function renderCategoryDetail(root, params) {
     figuresHost.append(emptyState('Nada aquí', 'Asigna figuras a esta categoría.'));
   } else {
     for (const item of withThumbs) {
-      figuresHost.append(buildAssignRow(item, collections, () => {
+      figuresHost.append(buildMemberRow(item, id, isNone, () => {
         navigate(`category/${id}`, true);
         location.reload();
       }));
@@ -235,7 +238,9 @@ export async function renderCategoryDetail(root, params) {
 
   const addHost = root.querySelector('#cat-add-list');
   if (addHost && !isNone) {
-    const candidates = allItems.filter((i) => i.collection_id !== id);
+    const candidates = allItems.filter(
+      (i) => !(i.collection_ids || []).includes(id) && i.collection_id !== id
+    );
     if (!candidates.length) {
       addHost.append(el('p', { className: 'muted', text: 'Todas tus figuras ya están en esta categoría.' }));
     } else {
@@ -250,7 +255,7 @@ export async function renderCategoryDetail(root, params) {
               el('h4', { text: item.name }),
               el('p', {
                 className: 'muted small',
-                text: item.collections?.name || 'Sin categoría'
+                text: item.collectionNames || 'Sin categoría'
               })
             ]),
             el('button', {
@@ -259,8 +264,8 @@ export async function renderCategoryDetail(root, params) {
               text: 'Agregar',
               onclick: async () => {
                 try {
-                  await updateItem(item.id, { collection_id: id });
-                  toast('Figura agregada', 'ok');
+                  await addItemToCollection(item.id, id);
+                  toast('Agregada (sigue en sus otras categorías)', 'ok');
                   navigate(`category/${id}`, true);
                   location.reload();
                 } catch (err) {
@@ -275,29 +280,23 @@ export async function renderCategoryDetail(root, params) {
   }
 }
 
-function buildAssignRow(item, collections, onChanged) {
-  const select = el('select', {
-    className: 'input',
-    onchange: async (e) => {
-      const val = e.target.value || null;
-      try {
-        await updateItem(item.id, { collection_id: val });
-        toast('Categoría actualizada', 'ok');
-        onChanged?.();
-      } catch (err) {
-        toast(err.message, 'error');
+function buildMemberRow(item, categoryId, isNone, onChanged) {
+  const actions = isNone
+    ? el('span', { className: 'muted small', text: 'Sin categoría' })
+    : el('button', {
+      type: 'button',
+      className: 'btn btn-ghost btn-sm',
+      text: 'Quitar',
+      onclick: async () => {
+        try {
+          await removeItemFromCollection(item.id, categoryId);
+          toast('Quitada de esta categoría', 'ok');
+          onChanged?.();
+        } catch (err) {
+          toast(err.message, 'error');
+        }
       }
-    }
-  }, [
-    el('option', { value: '', text: 'Sin categoría', ...(!item.collection_id ? { selected: true } : {}) }),
-    ...collections.map((c) =>
-      el('option', {
-        value: c.id,
-        text: c.name,
-        ...(c.id === item.collection_id ? { selected: true } : {})
-      })
-    )
-  ]);
+    });
 
   return el('div', { className: 'figure-assign-row' }, [
     item.thumbUrl
@@ -307,12 +306,14 @@ function buildAssignRow(item, collections, onChanged) {
       el('a', { href: `#/item/${item.id}` }, [el('h4', { text: item.name })]),
       el('p', {
         className: 'muted small',
-        text: [item.manufacturer, item.purchase_price != null ? formatMoney(item.purchase_price, item.currency) : null]
-          .filter(Boolean)
-          .join(' · ') || '—'
+        text: [
+          item.collectionNames,
+          item.manufacturer,
+          item.purchase_price != null ? formatMoney(item.purchase_price, item.currency) : null
+        ].filter(Boolean).join(' · ') || '—'
       })
     ]),
-    select
+    actions
   ]);
 }
 

@@ -32,6 +32,10 @@ export async function exportCollectionCSV() {
   ];
   const lines = [headers.join(',')];
   for (const i of items) {
+    const catNames = (i.collectionList || [])
+      .map((c) => c.name)
+      .filter(Boolean)
+      .join('; ') || i.collections?.name || '';
     lines.push([
       i.id,
       i.name,
@@ -48,7 +52,7 @@ export async function exportCollectionCSV() {
       i.currency,
       i.acquisition_date,
       i.notes,
-      i.collections?.name,
+      catNames,
       i.created_at
     ].map(escapeCsv).join(','));
   }
@@ -118,15 +122,25 @@ export async function importCollectionJSON(text) {
 
   let imported = 0;
   for (const item of data.items || []) {
-    let collectionId = null;
-    const cName = item.collections?.name || item.collection_name;
-    if (cName) {
+    const names = [];
+    if (Array.isArray(item.collectionList)) {
+      for (const c of item.collectionList) if (c?.name) names.push(c.name);
+    }
+    const raw = item.collection_names || item.collections?.name || item.collection_name;
+    if (raw) {
+      for (const part of String(raw).split(/[;|]/)) {
+        const n = part.trim();
+        if (n) names.push(n);
+      }
+    }
+    const collectionIds = [];
+    for (const cName of [...new Set(names)]) {
       const key = cName.toLowerCase();
       if (!byName[key]) {
         const created = await createCollection(cName);
         byName[key] = created;
       }
-      collectionId = byName[key].id;
+      collectionIds.push(byName[key].id);
     }
     await createItem({
       name: item.name,
@@ -143,7 +157,7 @@ export async function importCollectionJSON(text) {
       currency: item.currency,
       acquisition_date: item.acquisition_date,
       notes: item.notes,
-      collection_id: collectionId
+      collection_ids: collectionIds
     });
     imported++;
   }
@@ -158,14 +172,17 @@ export async function importCollectionCSV(text) {
 
   for (const row of rows) {
     if (!row.name) continue;
-    let collectionId = null;
-    if (row.collection_name) {
-      const key = row.collection_name.toLowerCase();
+    const collectionIds = [];
+    const rawCats = row.collection_name || row.collection_names || '';
+    for (const part of String(rawCats).split(/[;|]/)) {
+      const cName = part.trim();
+      if (!cName) continue;
+      const key = cName.toLowerCase();
       if (!byName[key]) {
-        const created = await createCollection(row.collection_name);
+        const created = await createCollection(cName);
         byName[key] = created;
       }
-      collectionId = byName[key].id;
+      collectionIds.push(byName[key].id);
     }
     await createItem({
       name: row.name,
@@ -182,7 +199,7 @@ export async function importCollectionCSV(text) {
       currency: row.currency || 'USD',
       acquisition_date: row.acquisition_date || null,
       notes: row.notes || null,
-      collection_id: collectionId
+      collection_ids: collectionIds
     });
     imported++;
   }
@@ -197,7 +214,11 @@ export async function enrichItemsWithThumbs(items) {
   const { getSignedUrls } = await import('./imageService.js');
   const map = await getSignedUrls(paths, 60 * 60 * 6, { variant: 'thumb' });
   return list.map((item) => {
-    const p = (item.item_images || [])[0]?.storage_path;
-    return { ...item, thumbUrl: p ? (map[p] || null) : null };
+    const p = (item.item_images || [])[0]?.storage_path || null;
+    return {
+      ...item,
+      thumbPath: p,
+      thumbUrl: p ? (map[p] || null) : null
+    };
   });
 }

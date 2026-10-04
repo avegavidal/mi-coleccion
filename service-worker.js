@@ -1,5 +1,5 @@
 /* Service Worker — network-first para HTML/JS/CSS (evita UI vieja en iPhone) */
-const CACHE = 'mi-coleccion-v39';
+const CACHE = 'mi-coleccion-v59';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'
@@ -17,6 +17,10 @@ self.addEventListener('activate', (event) => {
       Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 function isAppShell(url) {

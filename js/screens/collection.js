@@ -5,6 +5,67 @@ import {
   listItems, listCollections, createItem, getItem, updateItem,
   deleteItem, incrementQuantity, getDuplicateItems
 } from '../services/collectionService.js';
+
+/** Multi-select de categorías (varias a la vez con checkboxes). */
+function categoryMultiField(collections, selectedIds = []) {
+  const selected = new Set((selectedIds || []).map(String));
+  const list = collections || [];
+  if (!list.length) {
+    return el('fieldset', { className: 'category-multi' }, [
+      el('legend', { text: 'Categorías' }),
+      el('p', {
+        className: 'muted small',
+        text: 'Aún no hay categorías. Créalas en Colección → ▣ Categorías.'
+      })
+    ]);
+  }
+  const n = selected.size;
+  return el('fieldset', { className: 'category-multi' }, [
+    el('legend', { text: 'Categorías' }),
+    el('p', {
+      className: 'muted small category-multi-hint',
+      text: n
+        ? `${n} seleccionada${n === 1 ? '' : 's'} — toca para marcar o quitar`
+        : 'Marca todas las que apliquen (puedes elegir varias a la vez).'
+    }),
+    el('div', { className: 'category-check-grid' },
+      list.map((c) =>
+        el('label', { className: `check-chip${selected.has(c.id) ? ' is-on' : ''}` }, [
+          el('input', {
+            type: 'checkbox',
+            name: 'collection_ids',
+            value: c.id,
+            checked: selected.has(c.id)
+          }),
+          el('span', { text: c.name })
+        ])
+      )
+    )
+  ]);
+}
+
+function readCollectionIdsFromForm(form) {
+  return [...form.querySelectorAll('input[name="collection_ids"]:checked')].map((i) => i.value);
+}
+
+function wireCategoryChips(root) {
+  root.querySelectorAll('.category-multi').forEach((box) => {
+    const hint = box.querySelector('.category-multi-hint');
+    const updateHint = () => {
+      const n = box.querySelectorAll('input[name="collection_ids"]:checked').length;
+      if (!hint) return;
+      hint.textContent = n
+        ? `${n} seleccionada${n === 1 ? '' : 's'} — toca para marcar o quitar`
+        : 'Marca todas las que apliquen (puedes elegir varias a la vez).';
+    };
+    box.addEventListener('change', (e) => {
+      const input = e.target;
+      if (input?.name !== 'collection_ids') return;
+      input.closest('.check-chip')?.classList.toggle('is-on', input.checked);
+      updateHint();
+    });
+  });
+}
 import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { uploadItemImage, deleteImageRecord, getSignedUrl, getSignedUrls } from '../services/imageService.js';
 import {
@@ -22,6 +83,8 @@ import { isTcgMarketPriceMatch } from '../providers/AutoMarketSearchProvider.js'
 import { navigate } from '../utils/router.js';
 
 export async function renderCollection(root) {
+  const PAGE_SIZE = 24;
+
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header row-between' }, [
       el('div', {}, [
@@ -44,7 +107,8 @@ export async function renderCollection(root) {
       ]),
       el('button', { type: 'button', className: 'btn btn-ghost', id: 'apply-filters', text: 'Aplicar' })
     ]),
-    el('div', { className: 'card-grid', id: 'items-grid' })
+    el('div', { className: 'card-grid', id: 'items-grid' }),
+    el('div', { className: 'load-more-wrap', id: 'load-more-wrap' })
   ]));
 
   const collections = await listCollections();
@@ -53,35 +117,81 @@ export async function renderCollection(root) {
     sel.append(el('option', { value: c.id, text: c.name }));
   }
 
-  const load = async () => {
+  let offset = 0;
+  let exhausted = false;
+  let loading = false;
+
+  const filtersFromUi = () => ({
+    search: root.querySelector('#q').value,
+    collection_id: root.querySelector('#filter-collection').value || undefined,
+    sort: root.querySelector('#sort').value
+  });
+
+  const renderLoadMore = () => {
+    const wrap = root.querySelector('#load-more-wrap');
+    wrap.innerHTML = '';
+    if (exhausted || offset === 0) return;
+    const btn = el('button', {
+      type: 'button',
+      className: 'btn btn-ghost',
+      id: 'load-more',
+      text: 'Cargar más'
+    });
+    btn.addEventListener('click', () => load({ append: true }));
+    wrap.append(btn);
+  };
+
+  const load = async ({ append = false } = {}) => {
+    if (loading) return;
+    loading = true;
     const grid = root.querySelector('#items-grid');
-    grid.innerHTML = '<p class="muted">Cargando…</p>';
+    const moreBtn = root.querySelector('#load-more');
+    if (!append) {
+      offset = 0;
+      exhausted = false;
+      grid.innerHTML = '<p class="muted">Cargando…</p>';
+      root.querySelector('#load-more-wrap').innerHTML = '';
+    } else if (moreBtn) {
+      setBusy(moreBtn, true, 'Cargando…');
+    }
     try {
       const items = await listItems({
-        search: root.querySelector('#q').value,
-        collection_id: root.querySelector('#filter-collection').value || undefined,
-        sort: root.querySelector('#sort').value
+        ...filtersFromUi(),
+        limit: PAGE_SIZE,
+        offset
       });
       const withThumbs = await enrichItemsWithThumbs(items);
-      grid.innerHTML = '';
-      if (!withThumbs.length) {
+      if (!append) grid.innerHTML = '';
+
+      if (!append && !withThumbs.length) {
         grid.append(emptyState('Sin resultados', 'Prueba otra búsqueda o agrega una pieza.'));
+        exhausted = true;
+        renderLoadMore();
         return;
       }
+
       for (const item of withThumbs) grid.append(itemCard(item));
+      offset += items.length;
+      if (items.length < PAGE_SIZE) exhausted = true;
+      renderLoadMore();
     } catch (err) {
-      grid.innerHTML = `<p class="error-text">${err.message}</p>`;
+      if (!append) grid.innerHTML = `<p class="error-text">${err.message}</p>`;
+      else toast(err.message, 'error');
+    } finally {
+      loading = false;
+      const b = root.querySelector('#load-more');
+      if (b) setBusy(b, false);
     }
   };
 
-  root.querySelector('#apply-filters').addEventListener('click', load);
+  root.querySelector('#apply-filters').addEventListener('click', () => load());
   root.querySelector('#q').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') load();
   });
   let searchTimer = null;
   root.querySelector('#q').addEventListener('input', () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(load, 450);
+    searchTimer = setTimeout(() => load(), 450);
   });
   await load();
 }
@@ -111,18 +221,16 @@ export async function renderAdd(root, params = []) {
           })
         ])
       ]),
-      el('p', { className: 'status-line muted', id: 'id-status', text: 'La foto se analiza al instante (OCR de caja; IA opcional).' }),
+      el('p', { className: 'status-line muted', id: 'id-status', text: 'La foto se analiza al instante.' }),
+      el('div', { className: 'identify-progress', id: 'id-progress', hidden: true }, [
+        el('p', { className: 'identify-progress-label', id: 'id-progress-label', text: 'Identificando el ítem por foto…' }),
+        el('div', { className: 'identify-progress-track', 'aria-hidden': 'true' })
+      ]),
       el('label', {}, [
         el('span', { text: 'Nombre *' }),
         el('input', { className: 'input', name: 'name', required: true, placeholder: 'Se rellena al tomar la foto…', autocomplete: 'off' })
       ]),
-      el('label', {}, [
-        el('span', { text: 'Categoría' }),
-        el('select', { className: 'input', name: 'collection_id' }, [
-          el('option', { value: '', text: 'Sin categoría' }),
-          ...collections.map((c) => el('option', { value: c.id, text: c.name }))
-        ])
-      ]),
+      categoryMultiField(collections, []),
       el('details', { className: 'more-fields', id: 'more-fields' }, [
         el('summary', { text: 'Más detalles (opcional)' }),
         ...['manufacturer', 'franchise', 'series', 'item_number', 'character_name', 'category'].map((name) =>
@@ -166,6 +274,14 @@ export async function renderAdd(root, params = []) {
   const preview = root.querySelector('#preview');
   const form = root.querySelector('#add-form');
   const idStatus = root.querySelector('#id-status');
+  const idProgress = root.querySelector('#id-progress');
+  const idProgressLabel = root.querySelector('#id-progress-label');
+
+  const setIdentifyProgress = (active, message) => {
+    if (idProgress) idProgress.hidden = !active;
+    if (message && idProgressLabel) idProgressLabel.textContent = message;
+    if (message && idStatus && active) idStatus.textContent = message;
+  };
   const clearPhotoBtn = root.querySelector('#clear-photo');
   const camInput = root.querySelector('#cam');
   const galleryInput = root.querySelector('#gallery');
@@ -184,8 +300,9 @@ export async function renderAdd(root, params = []) {
     preview.append(el('span', { className: 'muted', text: 'Sin fotografía aún' }));
     clearPhotoBtn?.classList.add('hidden');
     if (resetStatus && idStatus) {
-      idStatus.textContent = 'La foto se analiza al instante (OCR de caja; IA opcional).';
+      idStatus.textContent = 'La foto se analiza al instante.';
     }
+    setIdentifyProgress(false);
   };
 
   const applySuggestion = (s) => {
@@ -238,19 +355,21 @@ export async function renderAdd(root, params = []) {
     clearPhotoBtn?.classList.remove('hidden');
 
     const seq = ++identifySeq;
-    idStatus.textContent = 'Analizando foto…';
+    setIdentifyProgress(true, 'Identificando el ítem por foto…');
     try {
       const suggestion = await identifyFigureFromPhoto(photoFile, {
         onProgress: (p) => {
           if (seq !== identifySeq) return;
-          idStatus.textContent = p.message || p.stage;
+          const msg = friendlyIdentifyMessage(p);
+          setIdentifyProgress(true, msg);
         }
       });
       if (seq !== identifySeq) return;
+      setIdentifyProgress(false);
       applySuggestion(suggestion);
       if (suggestion.name) {
-        idStatus.textContent = suggestion.source === 'gemini'
-          ? `Detectado (IA): ${suggestion.name}`
+        idStatus.textContent = suggestion.source === 'gemini' || suggestion.source === 'gemini-web'
+          ? `Detectado: ${suggestion.name}`
           : `Texto leído: ${suggestion.name}${suggestion.manufacturer ? ` · ${suggestion.manufacturer}` : ''}`;
         toast('Campos rellenados desde la foto — revisa y guarda', 'ok');
       } else {
@@ -259,9 +378,19 @@ export async function renderAdd(root, params = []) {
       }
     } catch (err) {
       if (seq !== identifySeq) return;
+      setIdentifyProgress(false);
       idStatus.textContent = err.message || 'No se pudo analizar la foto';
     }
   };
+
+  function friendlyIdentifyMessage(p) {
+    const raw = String(p?.message || '').trim();
+    if (/identificando|buscando el producto|reintentando|lectura de texto/i.test(raw)) return raw;
+    if (p?.stage === 'ocr' && /\d+%/.test(raw)) return raw;
+    if (p?.stage === 'ocr') return 'Identificando el ítem por foto…';
+    if (p?.stage === 'identify' || p?.stage === 'gemini') return 'Identificando el ítem por foto…';
+    return raw || 'Identificando el ítem por foto…';
+  }
 
   camInput?.addEventListener('change', (e) => {
     const f = e.target.files?.[0];
@@ -283,6 +412,8 @@ export async function renderAdd(root, params = []) {
     await setPhoto(prefillPhoto);
   }
 
+  wireCategoryChips(root);
+
   root.querySelector('#add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -293,7 +424,7 @@ export async function renderAdd(root, params = []) {
       status.textContent = 'Creando pieza…';
       const item = await createItem({
         name: fd.get('name'),
-        collection_id: fd.get('collection_id') || null,
+        collection_ids: readCollectionIdsFromForm(e.target),
         manufacturer: fd.get('manufacturer'),
         franchise: fd.get('franchise'),
         series: fd.get('series'),
@@ -333,7 +464,7 @@ function labelFor(name) {
     item_number: 'Número',
     character: 'Personaje',
     character_name: 'Personaje',
-    category: 'Categoría'
+    category: 'Tipo (Figura / TCG / etc.)'
   })[name] || name;
 }
 
@@ -353,10 +484,23 @@ export async function renderItemDetail(root, params) {
     el('header', { className: 'page-header' }, [
       el('a', { href: '#/collection', className: 'back-link', text: '← Colección' }),
       el('h1', { text: item.name }),
-      el('p', { className: 'page-sub', text: [item.collections?.name, item.manufacturer, item.franchise].filter(Boolean).join(' · ') })
+      el('p', {
+        className: 'page-sub',
+        text: [item.collectionNames || item.collections?.name, item.manufacturer, item.franchise]
+          .filter(Boolean)
+          .join(' · ')
+      })
     ]),
     el('div', { className: 'detail-gallery', id: 'gallery' }),
     el('div', { className: 'detail-meta' }, [
+      ...(item.collectionList || []).map((c) =>
+        el('a', {
+          href: `#/category/${c.id}`,
+          className: 'meta-chip meta-chip-cat',
+          text: c.name,
+          style: c.color ? `border-color:${c.color}` : undefined
+        })
+      ),
       el('div', { className: 'meta-chip', text: `Cantidad: ${item.quantity}` }),
       item.item_number ? el('div', { className: 'meta-chip', text: `#${item.item_number}` }) : null,
       item.year ? el('div', { className: 'meta-chip', text: String(item.year) }) : null,
@@ -653,13 +797,7 @@ export async function renderEdit(root, params) {
     ]),
     el('form', { id: 'edit-form', className: 'stack-form' }, [
       el('label', {}, [el('span', { text: 'Nombre' }), el('input', { className: 'input', name: 'name', value: item.name, required: true })]),
-      el('label', {}, [
-        el('span', { text: 'Categoría' }),
-        el('select', { className: 'input', name: 'collection_id' }, [
-          el('option', { value: '', text: 'Sin categoría' }),
-          ...collections.map((c) => el('option', { value: c.id, text: c.name, ...(c.id === item.collection_id ? { selected: true } : {}) }))
-        ])
-      ]),
+      categoryMultiField(collections, item.collection_ids || (item.collection_id ? [item.collection_id] : [])),
       ...['manufacturer', 'franchise', 'series', 'item_number', 'character_name', 'category'].map((name) =>
         el('label', {}, [
           el('span', { text: labelFor(name) }),
@@ -740,6 +878,8 @@ export async function renderEdit(root, params) {
     }
   });
 
+  wireCategoryChips(root);
+
   root.querySelector('#edit-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -747,6 +887,8 @@ export async function renderEdit(root, params) {
     setBusy(btn, true);
     try {
       const payload = Object.fromEntries(fd.entries());
+      delete payload.collection_ids;
+      payload.collection_ids = readCollectionIdsFromForm(e.target);
       await updateItem(id, payload);
       const paid = payload.purchase_price !== '' && payload.purchase_price != null
         ? Number(payload.purchase_price)
@@ -812,20 +954,30 @@ function paintMarketResult(host, result, item, hooks = {}) {
       const chosen = result.chosenId === match.id
         || (item.market_price_median != null && Number(item.market_price_median) === Number(match.price) && matches.length === 1);
       const link = listingLinkMeta(match, item);
-      const href = link.url;
-      const row = el('article', {
-        className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`
+      const href = link.url || '';
+      const row = el('a', {
+        className: `market-match-card is-store-link${chosen ? ' is-chosen' : ''}${isMarketRef ? ' is-market-ref' : ''}${link.exact ? '' : ' is-search-link'}`,
+        href: href || '#',
+        target: '_blank',
+        rel: 'noopener noreferrer'
       }, [
         el('div', { className: 'market-match-main' }, [
-          el('strong', { className: 'market-match-price', text: formatMoneyDual(match.price, match.currency || currency) }),
-          isMarketRef
-            ? el('span', { className: 'market-ref-badge', text: 'Market Price' })
-            : null,
+          el('strong', {
+            className: 'market-match-price',
+            text: formatMoneyDual(match.price, match.currency || currency)
+          }),
+          match.isMedianAnchor
+            ? el('span', { className: 'market-ref-badge', text: 'Mediana' })
+            : (isMarketRef ? el('span', { className: 'market-ref-badge', text: 'Market Price' }) : null),
           !link.exact ? el('span', { className: 'market-ref-badge market-est-badge', text: 'Orientativo' }) : null,
           el('p', { className: 'market-match-title', text: match.title || 'Sin título' }),
           el('p', {
             className: 'muted small',
-            text: [match.source, match.priceType, match.note].filter(Boolean).join(' · ')
+            text: [
+              match.source,
+              link.exact ? (match.priceType || 'listing') : 'orientativo · búsqueda',
+              match.note
+            ].filter(Boolean).join(' · ')
           }),
           el('span', { className: 'market-match-open', text: link.label })
         ]),
@@ -834,8 +986,11 @@ function paintMarketResult(host, result, item, hooks = {}) {
             el('button', {
               type: 'button',
               className: chosen ? 'btn btn-primary' : 'btn btn-ghost',
-              text: chosen ? '✓ Ideal' : (isMarketRef ? 'Usar Market Price' : (matches.length > 1 ? 'Usar este' : 'Guardar')),
+              text: chosen ? '✓ Ideal' : (match.isMedianAnchor || isMarketRef
+                ? 'Usar este precio'
+                : (matches.length > 1 ? 'Usar este' : 'Guardar')),
               onClick: (e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 hooks.onChooseMatch(match, matches, e.currentTarget);
               }
@@ -843,8 +998,18 @@ function paintMarketResult(host, result, item, hooks = {}) {
           ])
           : null
       ]);
-      row.addEventListener('click', () => {
-        if (!openExternal(href)) toast('No hay enlace válido para esta tienda', 'error');
+      row.addEventListener('click', (e) => {
+        // Botón “Usar este” ya hace preventDefault
+        if (e.target?.closest?.('button')) return;
+        e.preventDefault();
+        if (!href) {
+          toast('No hay enlace válido para esta tienda', 'error');
+          return;
+        }
+        if (!link.exact) {
+          toast('Orientativo: al buscar, el primer anuncio puede tener otro precio', 'info');
+        }
+        if (!openExternal(href)) toast('No se pudo abrir el enlace', 'error');
       });
       list.append(row);
     }
@@ -863,9 +1028,10 @@ function paintMarketResult(host, result, item, hooks = {}) {
       el('p', { className: 'muted small', text: result.note || 'Prueba mejorando marca/serie/personaje o usa un buscador abajo.' })
     ]));
   } else if (result.auto && result.status === 'error') {
+    const errNote = [result.note, ...(result.errors || []).slice(0, 2)].filter(Boolean).join(' · ');
     host.append(el('div', { className: 'notice notice-warn' }, [
       el('p', { text: 'La búsqueda automática no pudo leer el mercado ahora.' }),
-      el('p', { className: 'muted small', text: result.note || '' })
+      el('p', { className: 'muted small', text: errNote || 'Prueba “Buscar de nuevo” o abre Mercari abajo.' })
     ]));
   } else if (!result.auto) {
     host.append(el('p', { className: 'muted small', text: 'Preparando búsqueda automática…' }));

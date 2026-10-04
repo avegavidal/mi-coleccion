@@ -29,15 +29,31 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
- * Abre una tienda fuera de la PWA (Safari en iPhone a veces ignora target=_blank).
+ * Abre una tienda fuera de la PWA.
+ * Evita window.open(..., 'noopener') — en Chrome/Safari eso se bloquea como popup.
  * @param {string} url
  */
 export function openExternal(url) {
   const href = String(url || '').trim();
   if (!/^https?:\/\//i.test(href)) return false;
-  const opened = window.open(href, '_blank', 'noopener,noreferrer');
-  if (!opened) window.location.assign(href);
-  return true;
+  try {
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return true;
+  } catch {
+    try {
+      window.location.assign(href);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export function toast(message, type = 'info') {

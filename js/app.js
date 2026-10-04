@@ -1,6 +1,7 @@
 import { defineRoute, startRouter, setAuthUser, navigate, getAuthUser } from './utils/router.js';
 import { onAuthStateChange, getSession, signOut } from './services/authService.js';
 import { refreshUsdJpyRate } from './utils/dom.js';
+import { applyTheme } from './utils/theme.js';
 import { renderLogin, renderRecover } from './screens/auth.js';
 import { renderDashboard } from './screens/dashboard.js';
 import {
@@ -10,6 +11,8 @@ import {
 import { renderCollectionsManage, renderCategoryDetail } from './screens/categories.js';
 import { renderIdentify, renderCompare } from './screens/identify.js';
 import { renderWishlist, renderStats, renderAccount, renderSettings } from './screens/wishlist.js';
+
+applyTheme();
 
 defineRoute('login', renderLogin, { public: true });
 defineRoute('recover', renderRecover, { public: true });
@@ -104,8 +107,17 @@ async function boot() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('./service-worker.js?v=33');
+      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.19').replace(/\W/g, '');
+      const reg = await navigator.serviceWorker.register(`./service-worker.js?v=${swVer}`);
       await reg.update();
+      // Forzar activación del SW nuevo (iPhone a veces se queda con el viejo)
+      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // Una sola recarga tras actualizar SW
+        if (sessionStorage.getItem('mi_coleccion_sw_reloaded') === swVer) return;
+        sessionStorage.setItem('mi_coleccion_sw_reloaded', swVer);
+        location.reload();
+      });
     } catch (err) {
       console.warn('SW no registrado', err);
     }

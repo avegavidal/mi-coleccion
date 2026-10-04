@@ -159,7 +159,10 @@ const required = [
   'js/providers/EbayLinkProvider.js',
   'js/providers/EbayActiveProvider.js',
   'js/providers/AutoMarketSearchProvider.js',
+  'js/providers/TcgPlayerProvider.js',
+  'js/providers/MercariJpProvider.js',
   'js/utils/imageCrop.js',
+  'js/utils/theme.js',
   'js/screens/categories.js',
   'sql/schema.sql',
   'assets/icons/icon-192.png',
@@ -180,8 +183,31 @@ test('index.html referencia config, app, manifest y CSS', () => {
   assert(html.includes('manifest.json'));
   assert(html.includes('css/styles.css'));
   assert(html.includes('apple-mobile-web-app-capable'));
+  assert(html.includes('mi_coleccion_theme_v1'));
+  assert(/family=Manrope|Manrope/.test(html));
+  assert(/family=Sora|Sora/.test(html));
 });
 
+test('tema adaptativo: tokens duales + applyTheme + selector', () => {
+  const themeSrc = readFileSync(join(root, 'js/utils/theme.js'), 'utf8');
+  assert(/export function getThemePreference/.test(themeSrc));
+  assert(/export function setThemePreference/.test(themeSrc));
+  assert(/export function applyTheme/.test(themeSrc));
+  assert(/export function resolveTheme/.test(themeSrc));
+  assert(/prefers-color-scheme/.test(themeSrc));
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/data-theme="dark"/.test(css));
+  assert(/--glass-bg/.test(css));
+  assert(/Manrope/.test(css) && /Sora/.test(css));
+  const app = readFileSync(join(root, 'js/app.js'), 'utf8');
+  assert(/applyTheme/.test(app));
+  const settings = readFileSync(join(root, 'js/screens/wishlist.js'), 'utf8');
+  assert(/theme-picker/.test(settings));
+  assert(/setThemePreference/.test(settings));
+  const dash = readFileSync(join(root, 'js/screens/dashboard.js'), 'utf8');
+  assert(/stats-compact/.test(dash));
+  assert(/Mi Colección/.test(dash));
+});
 test('config no asigna service_role key', () => {
   const cfg = readFileSync(join(root, 'js/config.js'), 'utf8');
   // Permitir mencionar el peligro en comentarios; prohibir asignar la key
@@ -197,6 +223,37 @@ test('schema SQL tiene RLS, match_item_images y auth.uid', () => {
   assert(sql.includes('vector(512)'));
   assert(sql.includes('item-photos'));
   assert(sql.includes('public = FALSE') || sql.includes('public, FALSE') || sql.includes('FALSE'));
+});
+
+test('multi-categoría: item_collections N:N', () => {
+  const sql = readFileSync(join(root, 'sql/schema.sql'), 'utf8');
+  assert(/CREATE TABLE IF NOT EXISTS public\.item_collections/.test(sql));
+  assert(/PRIMARY KEY \(item_id, collection_id\)/.test(sql));
+  assert(existsSync(join(root, 'sql/migrate_item_collections.sql')));
+  const svc = readFileSync(join(root, 'js/services/collectionService.js'), 'utf8');
+  assert(/export function attachItemCollections/.test(svc));
+  assert(/export async function setItemCollections/.test(svc));
+  assert(/export async function addItemToCollection/.test(svc));
+  assert(/collection_ids/.test(svc));
+  assert(/hydrateCollectionsClientSide/.test(svc), 'debe hidratar categorías en cliente');
+  assert(!/collections!collection_id|collections!items_collection_id/.test(svc), 'no debe embeber collections desde items');
+  const statsSrc = readFileSync(join(root, 'js/services/statsService.js'), 'utf8');
+  assert(!/collections!|collections\(/.test(statsSrc), 'stats no debe embeber collections');
+  assert(!/collections \( id, name, color \)/.test(svc), 'sin embed ambiguo');
+  const col = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/categoryMultiField|collection_ids/.test(col));
+  assert(/name:\s*['"]collection_ids['"]/.test(col) || /name:\s*'collection_ids'/.test(col));
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.category-multi/.test(css));
+  assert(/\.check-chip/.test(css));
+});
+
+test('attachItemCollections une varias categorías (fuente)', () => {
+  const svc = readFileSync(join(root, 'js/services/collectionService.js'), 'utf8');
+  assert(/collectionList\s*=/.test(svc));
+  assert(/collectionNames\s*=/.test(svc));
+  assert(/item_collections/.test(svc));
+  assert(/fromJoin\.map/.test(svc) || /collectionList\.map/.test(svc));
 });
 
 test('RPC filtra por user autenticado', () => {
@@ -217,6 +274,19 @@ test('CSS define touch targets y safe areas', () => {
   assert(css.includes('min-height: 52px') || css.includes('min-height: 48px'));
   assert(css.includes('backdrop-filter'));
   assert(css.includes('prefers-reduced-motion'));
+});
+
+test('CSS lista en móvil y vitrina en web (≥720px)', () => {
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.card-grid\s*\{[^}]*flex-direction:\s*column/s.test(css));
+  assert(/\.item-card\s*\{[^}]*grid-template-columns:\s*76px/s.test(css));
+  assert(/@media\s*\(\s*min-width:\s*720px\s*\)/.test(css));
+  assert(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/.test(css));
+  assert(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/.test(css));
+  assert(/max-width:\s*1080px/.test(css));
+  const dash = readFileSync(join(root, 'js/screens/dashboard.js'), 'utf8');
+  assert(/item-card-main/.test(dash));
+  assert(/item-card-aside/.test(dash));
 });
 
 test('LocalEmbeddingProvider usa CLIP local', () => {
@@ -259,6 +329,33 @@ console.log('\n=== Import ESM de servicios críticos ===');
 await testAsync('similarity.js exporta API completa', async () => {
   assert(typeof sim.groupMatchesByItem === 'function');
   assert(typeof sim.splitStrongWeak === 'function');
+  assert(typeof sim.isClearSimilarityMatch === 'function');
+  assert(typeof sim.markNameAlignedMatches === 'function');
+});
+
+test('isClearSimilarityMatch exige umbral + gap', () => {
+  const settings = { high_similarity_threshold: 0.88 };
+  assert(!sim.isClearSimilarityMatch(0.87, 0.5, settings));
+  assert(!sim.isClearSimilarityMatch(0.89, 0.88, settings), 'sin gap no es claro');
+  assert(sim.isClearSimilarityMatch(0.90, 0.80, settings));
+  assert(sim.isClearSimilarityMatch(0.93, 0.92, settings), '≥0.92 absoluto');
+});
+
+test('markNameAlignedMatches no inventa % visual', () => {
+  const settings = { medium_similarity_threshold: 0.78, high_similarity_threshold: 0.88 };
+  const out = sim.markNameAlignedMatches(
+    [{ name: 'Glitter & Glamours Nemu Kurotsuchi', similarity: 0.80 }],
+    { name: 'BLEACH Glitter & Glamours Nemu Kurotsuchi', series: 'Glitter & Glamours', character_name: 'Nemu' },
+    settings
+  );
+  assert(out[0].preferredCandidate === true);
+  assert(out[0].similarity === 0.80);
+  const low = sim.markNameAlignedMatches(
+    [{ name: 'Glitter & Glamours Nemu', similarity: 0.60 }],
+    { series: 'Glitter & Glamours', character_name: 'Nemu' },
+    settings
+  );
+  assert(!low[0].preferredCandidate);
 });
 
 // Simular política: path de storage debe empezar por user id
@@ -342,6 +439,8 @@ test('enlaces US/JP incluyen eBay, Amazon y Yahoo JP', () => {
   assert(ids.includes('amazon-jp'));
   assert(ids.includes('yahoo-jp'));
   assert(ids.includes('mercari-jp'));
+  const mjp = links.find((l) => l.id === 'mercari-jp');
+  assert(/jp\.mercari\.com\/search/i.test(mjp.url), mjp.url);
   assert(ids.includes('amiami'));
   assert(ids.includes('mandarake'));
   assert(ids.includes('tcgplayer'));
@@ -427,6 +526,7 @@ test('storeLinkForMatch abre la tienda del precio', () => {
   };
   assert(ebayLinks.matchBelongsToItem({ title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto' }, item));
   assert(!ebayLinks.matchBelongsToItem({ title: 'BLEACH Glitter & Glamours Orihime Inoue figure' }, item));
+  // urlTrusted scrapado: se abre la ficha (el filtro de pieza ocurre antes en display)
   const wrongListing = ebayLinks.listingLinkMeta({
     source: 'ebay',
     title: 'BLEACH Glitter & Glamours Orihime Inoue',
@@ -434,8 +534,21 @@ test('storeLinkForMatch abre la tienda del precio', () => {
     price: 30,
     urlTrusted: true
   }, item);
-  assert(!wrongListing.exact, 'no debe abrir anuncio de otra figura');
-  assert(/Nemu|Glitter/i.test(decodeURIComponent(wrongListing.url)), wrongListing.url);
+  assert(wrongListing.exact, 'ficha scrapada debe abrir aunque el título sea de otra');
+  assert(/\/itm\/123456789012/.test(wrongListing.url), wrongListing.url);
+  const mercUs = ebayLinks.listingLinkMeta({
+    source: 'mercari',
+    title: 'HUNTERxHUNTER GREED ISLAND Gon Killua Hisoka',
+    url: 'https://www.mercari.com/item/m54716522520',
+    price: 149.99,
+    urlTrusted: true,
+    priceVerified: true
+  }, {
+    name: 'Hunter x Hunter Ichibansho',
+    character_name: 'Gon Killua Hisoka',
+    category: 'Figura'
+  });
+  assert(mercUs.exact && /m54716522520/.test(mercUs.url), mercUs.url);
 });
 
 test('enlaces visuales con imageUrl', () => {
@@ -443,6 +556,12 @@ test('enlaces visuales con imageUrl', () => {
   const ids = links.map((l) => l.id);
   assert(ids.includes('google-lens'));
   assert(ids.includes('bing-visual'));
+  assert(ids.includes('mercari-jp-photo'));
+  const mercariPhoto = links.find((l) => l.id === 'mercari-jp-photo');
+  assert(/jp\.mercari\.com/i.test(mercariPhoto.url));
+  // Sin foto aún ofrece Mercari JP foto (subir en su web)
+  const noImg = ebayLinks.buildVisualMarketLinks(null);
+  assert(noImg.some((l) => l.id === 'mercari-jp-photo'));
 });
 
 test('imágenes lite: thumbs + compresión upload', () => {
@@ -451,15 +570,27 @@ test('imágenes lite: thumbs + compresión upload', () => {
   assert(/createSignedUrls/.test(imgSrc));
   assert(/compressImageThumb/.test(imgSrc));
   assert(/_t\.webp/.test(imgSrc));
-  assert(/transform:\s*\{\s*width:\s*360/.test(imgSrc));
+  assert(/export async function ensureRemoteThumb/.test(imgSrc));
+  assert(/export function scheduleThumbBackfill/.test(imgSrc));
+  assert(/markThumbReady/.test(imgSrc));
+  assert(/NUNCA devolver full|never.*full/i.test(imgSrc) || !/fullSigned/.test(imgSrc));
   const domSrc = readFileSync(join(root, 'js/utils/dom.js'), 'utf8');
   assert(/compressImageUpload/.test(domSrc));
   assert(/compressImageThumb/.test(domSrc));
   assert(/image\/webp/.test(domSrc));
   const exp = readFileSync(join(root, 'js/services/exportService.js'), 'utf8');
   assert(/variant:\s*'thumb'/.test(exp));
+  assert(/thumbPath/.test(exp));
   const dash = readFileSync(join(root, 'js/screens/dashboard.js'), 'utf8');
   assert(/ids/.test(dash) && !/listItems\(\)/.test(dash));
+  assert(/data-storage-path|dataset\.storagePath|storagePath/.test(dash));
+  assert(/ensureRemoteThumb/.test(dash));
+  const col = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/PAGE_SIZE|limit:\s*PAGE_SIZE/.test(col));
+  assert(/Cargar más/.test(col));
+  const svc = readFileSync(join(root, 'js/services/collectionService.js'), 'utf8');
+  assert(/filters\.limit/.test(svc));
+  assert(/\.range\(/.test(svc));
   // Convención de path
   assert(imgSrc.includes("replace(/\\.[^.]+$/, '_t.webp')") || imgSrc.includes("_t.webp"));
 });
@@ -469,6 +600,54 @@ test('OCR suggestionFromOcrText detecta marca y nombre', async () => {
   const s = vis.suggestionFromOcrText('Good Smile Company\nNendoroid Link\nNo. 563');
   assert(s.manufacturer && /good smile/i.test(s.manufacturer));
   assert(s.name || s.item_number);
+});
+
+test('detectItemNumber lee códigos TCG tipo EXR-009', async () => {
+  const vis = await import(pathToFileURL(join(root, 'js/services/visionIdentifyService.js')).href);
+  assert(vis.detectItemNumber('SP EXR-009 [C+] [2]') === 'EXR-009');
+  assert(vis.detectItemNumber('Union Arena EXR-009 EX Resource') === 'EXR-009');
+  assert(vis.detectItemNumber('OP01-001 Romance Dawn') === 'OP01-001');
+  assert(vis.detectItemNumber('Nendoroid No. 563 Link') === '563');
+  const card = vis.suggestionFromOcrText(
+    'EX RESOURCE TOKEN\nSP EXR-009 [C+] [2]\nBANDAI MADE IN JAPAN\nUnion Arena'
+  );
+  assert(card.item_number === 'EXR-009', card.item_number);
+  assert(/tcg|carta/i.test(card.category || ''), card.category);
+});
+
+await testAsync('TCG queries y score priorizan el código de carta', async () => {
+  const auto = await import(pathToFileURL(join(root, 'js/providers/AutoMarketSearchProvider.js')).href);
+  const qs = market.buildLooseQueries({
+    name: 'Union Arena EX Resource',
+    item_number: 'EXR-009',
+    franchise: 'Union Arena',
+    manufacturer: 'Bandai',
+    category: 'TCG'
+  });
+  assert(qs[0] === 'EXR-009' || qs.some((q) => /^EXR-009\b/.test(q)), qs.join(' | '));
+  assert(qs.some((q) => /TCGPlayer/i.test(q)), qs.join(' | '));
+  assert(ebayLinks.isTcgCardItem({ item_number: 'EXR-009', manufacturer: 'Bandai' }));
+  const scored = auto.scoreAndSortMatches([
+    { title: 'Random pink girl card', price: 5, source: 'ebay', currency: 'USD' },
+    {
+      title: 'Union Arena EXR-009 EX Resource',
+      price: 2.5,
+      source: 'tcgplayer',
+      priceType: 'market',
+      priceVerified: true,
+      currency: 'USD',
+      note: 'TCGPlayer Market Price (leído de la página)'
+    }
+  ], { item_number: 'EXR-009', category: 'TCG', franchise: 'Union Arena' });
+  assert(/EXR-009/i.test(scored[0].title), scored.map((m) => m.title).join(' | '));
+  assert(auto.isTcgMarketPriceMatch(scored[0]));
+  const link = ebayLinks.preferredSearchQuery({
+    item_number: 'EXR-009',
+    franchise: 'Union Arena',
+    category: 'TCG',
+    name: 'Something else'
+  });
+  assert(/EXR-009/.test(link), link);
 });
 
 test('extractEbayPrices lee montos del HTML', () => {
@@ -559,6 +738,34 @@ test('identify/collection usan prepareImageForAnalysis', () => {
   assert(/Flujo 1|Flujo 2/.test(idSrc));
   assert(/openExternal/.test(idSrc), 'tocar el precio debe abrir la tienda');
   assert(/market-match-open/.test(idSrc));
+});
+
+test('identify prioriza agregar nueva si similitud no es clara', () => {
+  const idSrc = readFileSync(join(root, 'js/screens/identify.js'), 'utf8');
+  assert(/isClearSimilarityMatch/.test(idSrc));
+  assert(/high_similarity_threshold/.test(idSrc));
+  assert(/Agregar figura nueva/.test(idSrc));
+  assert(/identify-add-block|identify-primary-add/.test(idSrc));
+  assert(/identify-collection-cta|identify-add-sticky/.test(idSrc));
+  assert(!/similarity:\s*0\.92/.test(idSrc), 'no inventar 92% en matches por nombre');
+  assert(/Solo por nombre|no es similitud visual|no confirmada/i.test(idSrc));
+  assert(/markNameAlignedMatches|preferredCandidate/.test(idSrc));
+  const cfg = readFileSync(join(root, 'js/config.js'), 'utf8');
+  assert(/HIGH_SIMILARITY_THRESHOLD:\s*0\.88/.test(cfg));
+  assert(/MEDIUM_SIMILARITY_THRESHOLD:\s*0\.78/.test(cfg));
+});
+
+test('Mercari JP busca con la misma foto automáticamente', () => {
+  const auto = readFileSync(join(root, 'js/providers/AutoMarketSearchProvider.js'), 'utf8');
+  assert(/searchMercariJpWithGemini|runMercariPass/.test(auto));
+  assert(/Mercari JP por la misma foto/.test(auto));
+  assert(/lookupMercariJpMarket/.test(auto));
+  assert(/lookupMercariUsMarket/.test(auto));
+  const merc = readFileSync(join(root, 'js/providers/MercariJpProvider.js'), 'utf8');
+  assert(/export function extractMercariJpMatches/.test(merc));
+  assert(/export function extractMercariUsMatches/.test(merc));
+  assert(/jp\.mercari\.com/.test(merc));
+  assert(/parseYen|originalYen/.test(merc));
 });
 
 await testAsync('buildMarketProbeFromSuggestion prioriza suggestion sobre match', async () => {
@@ -699,7 +906,7 @@ test('hasUsefulMarketMatches exige precio > 0', () => {
   assert(autoM.hasUsefulMarketMatches([{ price: 12.5, title: 'x' }]));
 });
 
-test('shouldStopMarketSearch figuras con 1 match decente (sin exigir URL exacta)', () => {
+test('shouldStopMarketSearch figuras exige score alto o varios sólidos', () => {
   const fig = {
     name: 'Glitter & Glamours Nemu Kurotsuchi',
     manufacturer: 'Banpresto',
@@ -711,7 +918,10 @@ test('shouldStopMarketSearch figuras con 1 match decente (sin exigir URL exacta)
   assert(!autoM.shouldStopMarketSearch([
     { title: 'ruido', price: 20, source: 'web-snippet', priceType: 'estimate', score: -4 }
   ], fig, 1));
-  // Antes fallaba: listing sin /itm/ se trataba como estimate y nunca paraba
+  // Un score flojo ya no basta
+  assert(!autoM.shouldStopMarketSearch([
+    { title: 'Nemu something', price: 12, source: 'ebay', priceType: 'listing', score: 2 }
+  ], fig, 1));
   const scored = autoM.scoreAndSortMatches([
     {
       title: 'BLEACH Glitter & Glamours Nemu Kurotsuchi Banpresto figure',
@@ -722,15 +932,85 @@ test('shouldStopMarketSearch figuras con 1 match decente (sin exigir URL exacta)
       url: 'https://www.ebay.com/sch/i.html?_nkw=Nemu'
     }
   ], fig);
-  assert(scored[0].score >= 2, `score=${scored[0].score}`);
+  assert(scored[0].score >= 6, `score=${scored[0].score}`);
   assert(autoM.shouldStopMarketSearch(scored, fig, 1));
-  assert(autoM.hasReliableMarketMatches(scored, fig));
+  // Dos sólidos con precios cercanos
+  assert(autoM.shouldStopMarketSearch([
+    { title: 'Glitter Nemu Banpresto', price: 30, source: 'ebay', priceType: 'listing', score: 5 },
+    { title: 'Glitter Nemu figure', price: 32, source: 'mercari', priceType: 'listing', score: 4 }
+  ], fig, 2));
+  const refPick = autoM.pickFigureReferenceMatch([
+    { id: 'est', title: 'a', price: 10, source: 'ebay', priceType: 'estimate', score: 8, url: 'https://www.ebay.com/sch/i.html?_nkw=a' },
+    { id: 'b', title: 'b', price: 40, source: 'ebay', priceType: 'listing', score: 5, urlTrusted: true, linkExact: true, url: 'https://www.ebay.com/itm/123456789012' },
+    { id: 'c', title: 'c', price: 42, source: 'mercari', priceType: 'listing', score: 5, urlTrusted: true, linkExact: true, url: 'https://jp.mercari.com/item/m123456789' }
+  ]);
+  assert(refPick && (refPick.price === 40 || refPick.price === 42), `ref=${refPick?.price}`);
+  assert(refPick.isMedianAnchor === true);
+  assert(refPick.urlTrusted === true);
+});
+
+test('isPricedListingMatch exige anuncio real, no estimate con búsqueda', () => {
+  assert(!autoM.isPricedListingMatch({
+    price: 48.5, source: 'mercari', priceType: 'estimate',
+    url: 'https://jp.mercari.com/search?keyword=gon', linkExact: false
+  }));
+  assert(!autoM.isPricedListingMatch({
+    price: 48.5, source: 'mercari', priceType: 'estimate',
+    url: 'https://www.mercari.com/item/m54716522520', linkExact: true, urlTrusted: false
+  }));
+  assert(autoM.isPricedListingMatch({
+    price: 149.99, source: 'mercari', priceType: 'listing',
+    url: 'https://www.mercari.com/item/m54716522520', linkExact: true, urlTrusted: true
+  }));
+});
+
+test('pickFigureReferenceMatch ancla mediana al listing más cercano', () => {
+  const ref = autoM.pickFigureReferenceMatch([
+    { id: 'low', title: 'HxH low', price: 40, source: 'mercari', priceType: 'listing', urlTrusted: true, linkExact: true, url: 'https://jp.mercari.com/item/m1111111111', score: 4 },
+    { id: 'mid', title: 'HxH mid', price: 150, source: 'mercari', priceType: 'listing', urlTrusted: true, linkExact: true, url: 'https://www.mercari.com/item/m54716522520', score: 6 },
+    { id: 'high', title: 'HxH high', price: 160, source: 'ebay', priceType: 'listing', urlTrusted: true, linkExact: true, url: 'https://www.ebay.com/itm/123456789012', score: 5 },
+    { id: 'est', title: 'estimate', price: 48, source: 'mercari', priceType: 'estimate', linkExact: false, url: 'https://jp.mercari.com/search?keyword=hxh', score: 9 }
+  ]);
+  // mediana de [40,150,160] = 150 → enlace al ítem de $150
+  assert(ref.price === 150, `esperado 150, got ${ref.price}`);
+  assert(ref.id === 'mid');
+  assert(/m54716522520/.test(ref.url));
+  assert(ref.isMedianAnchor);
+  assert(ref.medianSampleSize === 3);
+});
+
+test('finalizeGeminiMatchUrls deja búsqueda si no hay ficha', () => {
+  const out = autoM.finalizeGeminiMatchUrls([
+    { title: 'HxH figure', price: 48, source: 'mercari', priceType: 'estimate', url: '', linkExact: false }
+  ], 'Hunter x Hunter Gon Killua');
+  assert(out[0].searchOnly === true);
+  assert(out[0].linkExact === false);
+  assert(/mercari\.com\/search|jp\.mercari\.com\/search/i.test(out[0].url), out[0].url);
+});
+
+test('filterDisplayMatches oculta estimates si hay listings', () => {
+  const item = { name: 'Hunter x Hunter Ichibansho Gon', character_name: 'Gon', category: 'Figura' };
+  const out = autoM.filterDisplayMatches([
+    { title: 'Hunter x Hunter Ichibansho Gon Killua', price: 149.99, source: 'mercari', priceType: 'listing', urlTrusted: true, linkExact: true, url: 'https://www.mercari.com/item/m54716522520', score: 8 },
+    { title: 'Hunter x Hunter estimate', price: 48.5, source: 'mercari', priceType: 'estimate', linkExact: false, url: 'https://jp.mercari.com/search?keyword=hxh', score: 7 }
+  ], item);
+  assert(out.length === 1, `len=${out.length}`);
+  assert(out[0].price === 149.99);
 });
 
 test('shouldStopMarketSearch cartas prioriza Market Price TCG', () => {
   const card = { category: 'TCG', name: 'Charizard ex', franchise: 'Pokemon' };
   assert(autoM.shouldStopMarketSearch([
-    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price', score: 8 }
+    {
+      id: 'b',
+      title: 'Charizard Market',
+      price: 42,
+      source: 'tcgplayer',
+      priceType: 'market',
+      priceVerified: true,
+      note: 'TCGPlayer Market Price (leído de la página)',
+      score: 8
+    }
   ], card, 1));
   assert(!autoM.shouldStopMarketSearch([
     { title: 'random', price: 5, source: 'ebay', priceType: 'listing', score: 1 }
@@ -770,22 +1050,119 @@ test('autoSearch reintento usa delay local (no sleep importado)', () => {
 test('pickTcgReferenceMatch prioriza Market Price de TCGPlayer', () => {
   const ref = autoM.pickTcgReferenceMatch([
     { id: 'a', title: 'Charizard Low', price: 10, source: 'tcgplayer', priceType: 'low', note: 'Low Price' },
-    { id: 'b', title: 'Charizard Market', price: 42, source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' },
+    {
+      id: 'b',
+      title: 'Charizard Market',
+      price: 42,
+      source: 'tcgplayer',
+      priceType: 'market',
+      priceVerified: true,
+      note: 'TCGPlayer Market Price (leído de la página)'
+    },
     { id: 'c', title: 'Charizard eBay', price: 55, source: 'ebay', priceType: 'listing' }
   ]);
   assert(ref.id === 'b');
   assert(autoM.isTcgMarketPriceMatch(ref));
 });
 
-test('parseGeminiMarketMatches conserva priceType market', () => {
+test('parseGeminiMarketMatches no marca Market Price sin verificar página', () => {
   const m = autoM.parseGeminiMarketMatches(JSON.stringify({
     found: true,
     matches: [
       { title: 'Pikachu 025', price: 3.5, currency: 'USD', source: 'tcgplayer', priceType: 'market', note: 'TCGPlayer Market Price' }
     ]
   }));
-  assert(m[0].priceType === 'market');
-  assert(autoM.isTcgMarketPriceMatch(m[0]));
+  assert(m[0].priceType === 'estimate');
+  assert(m[0].priceVerified !== true);
+  assert(!autoM.isTcgMarketPriceMatch(m[0]));
+});
+
+test('extractTcgPlayerMarketMatches lee Market Price del HTML de la página', async () => {
+  const tcg = await import(pathToFileURL(join(root, 'js/providers/TcgPlayerProvider.js')).href);
+  const html = `
+    <h1>EX Resource (EXR-009) (C+) (SP)</h1>
+    <a href="https://www.tcgplayer.com/product/707591/gundam-ex-resource">Product</a>
+    <div>Market Price $739.71</div>
+    <div>Low Price $640.00</div>
+  `;
+  const hits = tcg.extractTcgPlayerMarketMatches(html, 'EXR-009');
+  assert(hits.length >= 1, String(hits.length));
+  assert(hits[0].price === 739.71, String(hits[0].price));
+  assert(hits[0].priceVerified === true);
+  assert(hits[0].priceType === 'market');
+  assert(/707591/.test(hits[0].url || hits[0].productUrl || ''));
+  // No hardcodear: otro HTML → otro precio
+  const html2 = '<p>Market Price $12.34</p><a href="/product/1111">x</a>';
+  const hits2 = tcg.extractTcgPlayerMarketMatches(html2, 'TEST');
+  assert(hits2[0].price === 12.34);
+});
+
+test('extractMercariJpMatches lee yen y /item/ del HTML', async () => {
+  const merc = await import(pathToFileURL(join(root, 'js/providers/MercariJpProvider.js')).href);
+  const html = `
+    Product Nendoroid Link
+    https://jp.mercari.com/item/m12345678901
+    ¥3,980
+  `;
+  const hits = merc.extractMercariJpMatches(html, 'Nendoroid Link');
+  assert(hits.length >= 1, String(hits.length));
+  assert(hits[0].source === 'mercari');
+  assert(/m12345678901/.test(hits[0].url));
+  assert(hits[0].originalYen === 3980);
+  assert(hits[0].price > 0);
+});
+
+test('extractMercariUsMatches lee $USD y /item/ del HTML', async () => {
+  const merc = await import(pathToFileURL(join(root, 'js/providers/MercariJpProvider.js')).href);
+  const html = `
+## "Hunter x Hunter" search result #1
+[![Image 3: HUNTERxHUNTER GREED ISLAND Gon Killua Hisoka Ichiban Figure - Bandai](https://u-mercari-images.mercdn.net/photos/m54716522520_1.jpg?width=2560&quality=75&_=1784444901) HUNTERxHUNTER GREED ISLAND Gon Killua Hisoka Ichiban Figure $149.99](https://www.mercari.com/us/item/m54716522520/?ref=search_results)
+[![Image 4: Other](https://u-mercari-images.mercdn.net/photos/m18361256604_1.jpg?width=2560&quality=75&_=1) Hunter X Hunter Gon Freecss / Killua Zoldyck $70.00](https://www.mercari.com/us/item/m18361256604/?ref=search_results)
+  `;
+  const hits = merc.extractMercariUsMatches(html, 'Hunter x Hunter Ichibansho');
+  assert(hits.length >= 2, String(hits.length));
+  const target = hits.find((h) => /m54716522520/.test(h.url));
+  assert(target, 'debe hallar m54716522520');
+  assert(target.price === 149.99, String(target.price));
+  assert(/Gon Killua Hisoka/i.test(target.title), target.title);
+  assert(target.urlTrusted === true);
+  assert(target.currency === 'USD');
+});
+
+test('matchBelongsToItem acepta anuncio HxH sin Revible en título', () => {
+  const item = {
+    name: 'Hunter x Hunter Ichibansho Revible Moment Gon Killua Hisoka',
+    series: 'Revible Moment',
+    character_name: 'Gon Killua Hisoka',
+    manufacturer: 'Bandai',
+    category: 'Figura'
+  };
+  assert(ebayLinks.matchBelongsToItem({
+    title: 'HUNTERxHUNTER GREED ISLAND Gon Killua Hisoka Ichiban Figure'
+  }, item));
+  assert(!ebayLinks.matchBelongsToItem({
+    title: 'Dragon Ball Z GxMateria Android 16 Figure'
+  }, item));
+});
+
+test('normalizeMatchPriceToUsd convierte yen etiquetado como USD', () => {
+  const n = autoM.normalizeMatchPriceToUsd({
+    price: 6200,
+    currency: 'USD',
+    source: 'mercari',
+    note: 'approx 6200 JPY',
+    priceType: 'estimate'
+  });
+  assert(n.price > 30 && n.price < 60, `esperado ~41, got ${n.price}`);
+  assert(n.originalYen === 6200);
+  const ok = autoM.normalizeMatchPriceToUsd({
+    price: 149.99,
+    currency: 'USD',
+    source: 'mercari',
+    note: 'Mercari US listing',
+    priceType: 'listing'
+  });
+  assert(ok.price === 149.99, String(ok.price));
 });
 
 test('parseGeminiMarketMatches lee JSON con varias opciones', () => {

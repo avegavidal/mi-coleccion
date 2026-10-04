@@ -12,6 +12,7 @@ import { getDashboardStats } from '../services/collectionService.js';
 import { getRecognitionSettings, updateRecognitionSettings } from '../services/recognitionService.js';
 import { getEmbeddingMeta, warmupEmbeddings } from '../services/embeddingService.js';
 import { getGeminiApiKey, setGeminiApiKey, hasGeminiApiKey } from '../services/visionIdentifyService.js';
+import { getThemePreference, setThemePreference } from '../utils/theme.js';
 import { navigate } from '../utils/router.js';
 
 export async function renderWishlist(root) {
@@ -219,11 +220,39 @@ export async function renderSettings(root) {
   const settings = await getRecognitionSettings();
   const meta = getEmbeddingMeta();
   const geminiSaved = hasGeminiApiKey();
+  const themePref = getThemePreference();
 
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Configuración' }),
-      el('p', { className: 'page-sub', text: 'IA, umbrales y modelo visual.' })
+      el('p', { className: 'page-sub', text: 'Apariencia, IA y modelo visual.' })
+    ]),
+    el('section', { className: 'section' }, [
+      el('h2', { text: 'Apariencia' }),
+      el('p', {
+        className: 'page-sub',
+        text: 'Claro de día y oscuro de noche si eliges Sistema (sigue tu dispositivo).'
+      }),
+      el('div', { className: 'theme-picker', id: 'theme-picker' }, [
+        el('button', {
+          type: 'button',
+          dataset: { theme: 'system' },
+          className: themePref === 'system' ? 'active' : '',
+          text: 'Sistema'
+        }),
+        el('button', {
+          type: 'button',
+          dataset: { theme: 'light' },
+          className: themePref === 'light' ? 'active' : '',
+          text: 'Claro'
+        }),
+        el('button', {
+          type: 'button',
+          dataset: { theme: 'dark' },
+          className: themePref === 'dark' ? 'active' : '',
+          text: 'Oscuro'
+        })
+      ])
     ]),
     el('section', { className: 'section' }, [
       el('h2', { text: 'Gemini (visión + precios)' }),
@@ -259,15 +288,15 @@ export async function renderSettings(root) {
     ]),
     el('form', { id: 'thr-form', className: 'stack-form' }, [
       el('label', {}, [
-        el('span', { text: 'Umbral alto (posible coincidencia clara)' }),
+        el('span', { text: 'Umbral alto (coincidencia clara, default 0.88)' }),
         el('input', { className: 'input', name: 'high_similarity_threshold', type: 'number', step: '0.01', min: '0', max: '1', value: settings.high_similarity_threshold })
       ]),
       el('label', {}, [
-        el('span', { text: 'Umbral medio' }),
+        el('span', { text: 'Umbral medio (parecida, default 0.78)' }),
         el('input', { className: 'input', name: 'medium_similarity_threshold', type: 'number', step: '0.01', min: '0', max: '1', value: settings.medium_similarity_threshold })
       ]),
       el('label', {}, [
-        el('span', { text: 'Umbral bajo (mínimo para mostrar)' }),
+        el('span', { text: 'Umbral bajo (mínimo para mostrar, default 0.58)' }),
         el('input', { className: 'input', name: 'low_similarity_threshold', type: 'number', step: '0.01', min: '0', max: '1', value: settings.low_similarity_threshold })
       ]),
       el('label', {}, [
@@ -287,6 +316,19 @@ export async function renderSettings(root) {
     ]),
     el('p', { className: 'muted', text: `Versión ${window.APP_CONFIG?.APP_VERSION || '1.0.0'}` })
   ]));
+
+  root.querySelector('#theme-picker')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-theme]');
+    if (!btn) return;
+    const next = setThemePreference(btn.dataset.theme);
+    root.querySelectorAll('#theme-picker button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.theme === next);
+    });
+    toast(
+      next === 'system' ? 'Tema: sistema' : next === 'dark' ? 'Tema oscuro' : 'Tema claro',
+      'ok'
+    );
+  });
 
   root.querySelector('#gemini-form').addEventListener('submit', (e) => {
     e.preventDefault();

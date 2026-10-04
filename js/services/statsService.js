@@ -1,10 +1,15 @@
 import { supabase } from '../services/supabaseClient.js';
 
 export async function getStatsData() {
-  const { data: items, error } = await supabase
-    .from('items')
-    .select('id, name, manufacturer, year, quantity, purchase_price, currency, collection_id, created_at, collections(name)');
+  const [{ data: items, error }, { data: cols }] = await Promise.all([
+    supabase
+      .from('items')
+      .select('id, name, manufacturer, year, quantity, purchase_price, currency, collection_id, created_at'),
+    supabase.from('collections').select('id, name')
+  ]);
   if (error) throw error;
+
+  const byId = Object.fromEntries((cols || []).map((c) => [c.id, c.name]));
   const list = items || [];
 
   const byCollection = {};
@@ -15,7 +20,7 @@ export async function getStatsData() {
   let duplicates = 0;
 
   for (const i of list) {
-    const cName = i.collections?.name || 'Sin categoría';
+    const cName = (i.collection_id && byId[i.collection_id]) || 'Sin categoría';
     byCollection[cName] = (byCollection[cName] || 0) + (i.quantity || 1);
 
     const m = i.manufacturer || 'Sin marca';

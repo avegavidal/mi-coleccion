@@ -81,11 +81,69 @@ export function splitStrongWeak(grouped, settings) {
       g.similarity < settings.medium_similarity_threshold &&
       g.similarity >= settings.low_similarity_threshold
   );
+  const sims = (grouped || []).map((g) => Number(g.similarity) || 0).sort((a, b) => b - a);
   return {
     strong,
     weak,
-    hasClearMatch: strong.some((g) => g.similarity >= settings.high_similarity_threshold)
+    hasClearMatch: isClearSimilarityMatch(sims[0] || 0, sims[1] || 0, settings)
   };
+}
+
+/**
+ * Match “claro”: umbral alto + separación vs 2.º (o casi certeza ≥0.92).
+ * @param {number} best
+ * @param {number} second
+ * @param {{ high_similarity_threshold?: number }} [settings]
+ */
+export function isClearSimilarityMatch(best, second = 0, settings = {}) {
+  const high = Number(settings.high_similarity_threshold);
+  const CLEAR = Number.isFinite(high) ? high : 0.88;
+  const GAP = 0.04;
+  const ABSOLUTE = 0.92;
+  const b = Number(best) || 0;
+  const s = Number(second) || 0;
+  if (b < CLEAR) return false;
+  if (b >= ABSOLUTE) return true;
+  return b - s >= GAP;
+}
+
+/**
+ * Tokens fuertes de una sugerencia / ítem para fusionar con matches CLIP.
+ */
+export function identityStrongTokens(source) {
+  const blob = [
+    source?.name,
+    source?.series,
+    source?.character_name || source?.character,
+    source?.manufacturer,
+    source?.franchise
+  ].filter(Boolean).join(' ');
+  return String(blob)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !/^(the|and|for|with|from|banpresto|bandai|figure|figura)$/i.test(t));
+}
+
+/**
+ * Marca candidatos CLIP que alinean con la identidad Gemini (sin inventar %).
+ * Nunca convierte visual < HIGH en clear.
+ * @param {object[]} matches
+ * @param {object|null} suggestion
+ * @param {{ medium_similarity_threshold?: number, high_similarity_threshold?: number }} settings
+ */
+export function markNameAlignedMatches(matches, suggestion, settings = {}) {
+  const medium = Number(settings.medium_similarity_threshold) || 0.78;
+  const tokens = identityStrongTokens(suggestion);
+  if (!tokens.length) return matches || [];
+  return (matches || []).map((m) => {
+    const sim = Number(m.similarity) || 0;
+    if (sim < medium) return m;
+    const hay = String(m.name || '').toLowerCase();
+    const hits = tokens.filter((t) => hay.includes(t)).length;
+    if (hits < 2 && !(hits >= 1 && tokens.length <= 2)) return m;
+    return { ...m, nameAligned: true, preferredCandidate: true };
+  });
 }
 
 export function escapeCsv(value) {

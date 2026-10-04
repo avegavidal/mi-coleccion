@@ -99,6 +99,8 @@ git push -u origin main
 
 Opcional (después de tener fotos): ejecuta también `sql/optional_vector_index.sql` para acelerar búsquedas.
 
+Si ya tenías la base creada antes de las **multi-categorías**, ejecuta también `sql/migrate_item_collections.sql` (permite que una figura esté en varias categorías).
+
 ### 6) Verificar Storage
 
 1. Menú **Storage**

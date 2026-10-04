@@ -50,7 +50,7 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
   const apiKey = getGeminiApiKey();
 
   if (apiKey) {
-    onProgress({ stage: 'gemini', message: 'Leyendo la foto con Gemini 2.5…' });
+    onProgress({ stage: 'identify', message: 'Identificando el ítem por foto…' });
     try {
       const gemini = await identifyWithGemini(file, apiKey, onProgress);
       if (gemini?.name && !isGarbageProductName(gemini.name)) {
@@ -65,11 +65,11 @@ export async function identifyFigureFromPhoto(file, opts = {}) {
       }
     } catch (err) {
       console.warn('[vision] Gemini falló, uso OCR', err);
-      onProgress({ stage: 'ocr', message: `Gemini no respondió (${err.message}). Probando OCR…` });
+      onProgress({ stage: 'ocr', message: 'Reintentando lectura de la foto…' });
     }
   }
 
-  onProgress({ stage: 'ocr', message: 'Leyendo texto de la foto (caja / etiqueta)…' });
+  onProgress({ stage: 'ocr', message: 'Identificando el ítem por foto…' });
   const ocr = await identifyWithOcr(file, onProgress);
   if (!apiKey) {
     ocr.note = (ocr.note || '') + ' Tip: en Configuración guarda tu Gemini API key para mejores resultados.';
@@ -146,31 +146,36 @@ async function identifyWithGemini(file, apiKey, onProgress = () => {}) {
   const preferModel = models[0] || 'gemini-2.5-flash-lite';
   const genOpts = { models, preferModel, purpose: 'vision' };
 
-  const visionPrompt = `You are looking at ONE photo of a collectible (anime figure box or trading card).
+  const visionPrompt = `You are looking at ONE photo of a collectible (anime figure box OR trading card).
 
-Task: read the box/card and return the OFFICIAL retail product title in clear Latin letters when the product is sold that way internationally (AmiAmi / eBay / Bandai English name).
+Task: read the box/card and return the OFFICIAL retail identity shops use.
 
-CRITICAL:
-- Output a CLEAN human-readable title. No OCR garbage, no random fragments, no "Thi The…", no replacement characters (�).
+CRITICAL — TRADING CARDS (Union Arena, One Piece TCG, Pokémon, Weiss, etc.):
+- MUST read the collector / card code printed on the card (e.g. EXR-009, OP01-001, ST01-015). Put it in item_number EXACTLY as printed (keep hyphens).
+- category MUST be "TCG" or "Carta".
+- franchise = game name (e.g. "Union Arena"). manufacturer when visible (Bandai, etc.).
+- name = game + card name + code, e.g. "Union Arena EX Resource EXR-009".
+- Do NOT invent eBay item URLs. Codes matter more than character vibes.
+
+CRITICAL — FIGURES:
 - FIGURE boxes (Banpresto, Glitter & Glamours, G×materia, Nendoroid, figma, Ichibansho, Pop Up Parade) → category "Figura". Never call them TCG.
-- Prefer: Franchise + line + character, e.g. "BLEACH Glitter & Glamours Nemu Kurotsuchi", "Dragon Ball Z G×materia The Vegeta", "Nendoroid Link: Twilight Princess".
-- If the box is Japanese, still return the common English/romaji retail title used in Western shops when known.
-- Fill series (Glitter & Glamours / G×materia / Nendoroid…), character_name, manufacturer when visible.
-- name MUST be ASCII-friendly retail title (romaji OK). Do not dump raw noisy box OCR.
+- Prefer: Franchise + line + character, e.g. "BLEACH Glitter & Glamours Nemu Kurotsuchi".
+- Output a CLEAN human-readable title. No OCR garbage, no "Thi The…", no �.
+- name MUST be ASCII-friendly retail title (romaji OK).
 
 Return ONLY JSON with keys:
 name, manufacturer, franchise, series, character_name, item_number, year, category, confidence.`;
 
-  const webPrompt = `Using the PHOTO and live web search, find the EXACT retail listing title for this collectible.
-Return the official English/romaji product name shops use (AmiAmi, eBay, Bandai).
-Do NOT invent OCR-like fragments. No strange characters.
-Same JSON keys: name, manufacturer, franchise, series, character_name, item_number, year, category, confidence.
-FIGURE not TCG if the photo shows a figure box.`;
+  const webPrompt = `Using the PHOTO and live web search, find the EXACT product.
+If it is a TRADING CARD: find the collector number on the card (EXR-009 etc.), set category "TCG", and return TCGPlayer/Cardmarket identity.
+If it is a FIGURE: return AmiAmi/eBay English-romaji title. Never call a figure a TCG card.
+Do NOT invent OCR fragments or fake ebay.com/itm/ IDs.
+Same JSON keys: name, manufacturer, franchise, series, character_name, item_number, year, category, confidence.`;
 
   const imagePart = { inline_data: { mime_type: mime, data: base64 } };
 
   // 1) Visión pura + JSON estricto (más fiable para el nombre que grounding)
-  onProgress({ stage: 'gemini', message: 'Gemini 2.5 lee la caja…' });
+  onProgress({ stage: 'identify', message: 'Identificando el ítem por foto…' });
   let best = null;
   try {
     const out = await geminiGenerateContent(apiKey, {
@@ -185,7 +190,7 @@ FIGURE not TCG if the photo shows a figure box.`;
 
   // 2) Si el nombre es basura o flojo, grounding web
   if (!best?.name || isGarbageProductName(best.name) || scoreIdentitySuggestion(best) < 40) {
-    onProgress({ stage: 'gemini', message: 'Buscando título oficial en la web…' });
+    onProgress({ stage: 'identify', message: 'Buscando el producto en catálogos…' });
     try {
       const out = await geminiGenerateContent(apiKey, {
         contents: [{ parts: [{ text: webPrompt }, imagePart] }],
@@ -235,13 +240,20 @@ export function polishSuggestionName(s) {
   const character = sanitizeProductName(s.character_name || '') || null;
   const franchise = sanitizeProductName(s.franchise || '') || null;
   const manufacturer = sanitizeProductName(s.manufacturer || '') || null;
+  let itemNumber = s.item_number ? String(s.item_number).trim() : null;
+  if (!itemNumber || itemNumber.length < 3) {
+    itemNumber = detectItemNumber([name, s.rawText, franchise, series].filter(Boolean).join(' ')) || itemNumber;
+  }
+  if (itemNumber) itemNumber = normalizeCollectorCode(itemNumber);
 
   if (isGarbageProductName(name) || name.length < 8) {
-    const composed = [franchise, series, character].filter(Boolean).join(' ').trim();
+    const composed = [franchise, series, character, itemNumber].filter(Boolean).join(' ').trim();
     if (composed.length >= 8 && !isGarbageProductName(composed)) {
       name = composed;
     } else if (series && character) {
       name = `${series} ${character}`.trim();
+    } else if (itemNumber && (franchise || manufacturer)) {
+      name = [franchise || manufacturer, itemNumber].join(' ');
     }
   } else if (series && character) {
     const seriesKey = series.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
@@ -255,13 +267,24 @@ export function polishSuggestionName(s) {
     }
   }
 
+  // Si hay código TCG, forzar categoría carta
+  let category = s.category || null;
+  if (itemNumber && /^[A-Z]{2,6}/i.test(itemNumber) && /[-_/]\d/.test(itemNumber)) {
+    if (!category || /\bfigura\b/i.test(category)) category = 'TCG';
+    if (!name.toUpperCase().includes(itemNumber.toUpperCase())) {
+      name = `${name} ${itemNumber}`.trim();
+    }
+  }
+
   return normalizeSuggestion({
     ...s,
     name,
     series,
     character_name: character,
     franchise,
-    manufacturer
+    manufacturer,
+    item_number: itemNumber,
+    category
   });
 }
 
@@ -271,13 +294,13 @@ export function polishSuggestionName(s) {
  */
 async function identifyWithOcr(file, onProgress) {
   const { createWorker } = await import('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/+esm');
-  onProgress({ stage: 'ocr', message: 'Cargando motor OCR (solo la 1ª vez)…' });
+  onProgress({ stage: 'ocr', message: 'Cargando lectura de texto…' });
   const worker = await createWorker('eng+jpn', 1, {
     logger: (m) => {
       if (m.status === 'recognizing text' && m.progress != null) {
         onProgress({
           stage: 'ocr',
-          message: `Leyendo texto… ${Math.round(m.progress * 100)}%`
+          message: `Identificando el ítem por foto… ${Math.round(m.progress * 100)}%`
         });
       }
     }
@@ -329,15 +352,17 @@ export function suggestionFromOcrText(text) {
 
   const looksFigure = /\b(figure|figura|banpresto|glitter|nendoroid|figma|figuarts|scale|g\s*[x×]\s*materia|ichiban)\b/i.test(full)
     || /\b(banpresto|good\s*smile|bandai\s*spirits)\b/i.test(manufacturer || '');
+  const looksTcg = Boolean(itemNumber && /[A-Z].*\d|\d.*[A-Z]/i.test(itemNumber) && /[-_/]/.test(itemNumber))
+    || /union\s*arena|ex\s*resource|resource\s*token|tcgplayer|trading\s*card/i.test(full);
   return polishSuggestionName(normalizeSuggestion({
     name: name || [manufacturer, series, itemNumber].filter(Boolean).join(' '),
     manufacturer,
-    franchise: null,
+    franchise: looksTcg && /union\s*arena/i.test(full) ? 'Union Arena' : null,
     series,
     character_name: null,
     item_number: itemNumber,
     year: detectYear(full),
-    category: looksFigure ? 'Figura' : null,
+    category: looksFigure && !looksTcg ? 'Figura' : (looksTcg ? 'TCG' : null),
     confidence: name && (manufacturer || itemNumber || series) ? 'medium' : 'low',
     source: 'ocr',
     rawText: text
@@ -357,6 +382,7 @@ function detectBrand(text) {
 
 function detectSeries(text) {
   const lower = text.toLowerCase();
+  if (/union\s*arena/.test(lower)) return 'Union Arena';
   if (/nendoroid/.test(lower)) return 'Nendoroid';
   if (/\bfigma\b/.test(lower)) return 'figma';
   if (/figuarts|s\.h\.figuarts/.test(lower)) return 'S.H.Figuarts';
@@ -366,20 +392,50 @@ function detectSeries(text) {
   if (/g\s*[x×]\s*materia|gxmateria/i.test(lower)) return 'G×materia';
   if (/ichibansho|ichiban kuji/i.test(lower)) return 'Ichibansho';
   if (/glitter\s*&\s*glamours|glitter\s+and\s+glamours/i.test(lower)) return 'Glitter & Glamours';
+  if (/ex\s*resource|resource\s*token/i.test(lower)) return 'EX Resource';
   return null;
 }
 
-function detectItemNumber(text) {
-  const patterns = [
-    /\b(?:No\.?|NO\.?|#|Item\s*)(\d{2,5})\b/i,
-    /\b([A-Z]{2,5}[-_]?\d{2,5}[A-Z]?)\b/,
-    /\b(\d{3,5})\b/
-  ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m) return m[1] || m[0];
-  }
+/**
+ * Extrae número de figura (No. 563) o código de carta TCG (EXR-009).
+ * Prioriza códigos alfanuméricos con guion (cartas).
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function detectItemNumber(text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+
+  // 1) Códigos TCG con guion: EXR-009, OP01-001, ST01-015, UA01BT-001
+  const tcgHyphen = s.match(/\b([A-Z]{2,6}\d{0,2}[-_/][A-Z]?\d{2,4}(?:[-_/]\d{2,4})?[A-Z]?)\b/i);
+  if (tcgHyphen) return normalizeCollectorCode(tcgHyphen[1]);
+
+  // 2) Prefijos conocidos pegados: EXR009 → EXR-009
+  const glued = s.match(/\b((?:EXR|OP|ST|UA|BT|EB|P|SP|CS)\d{2,4}[A-Z]?)\b/i);
+  if (glued) return normalizeCollectorCode(glued[1]);
+
+  // 3) Figuras: No. 563 / Item 1234
+  const figNo = s.match(/\b(?:No\.?|NO\.?|#|Item)\s*(\d{2,5})\b/i);
+  if (figNo) return figNo[1];
+
+  // 4) Código alfanumérico compacto (GSC-123)
+  const sku = s.match(/\b([A-Z]{2,5}[-_]?\d{2,5}[A-Z]?)\b/);
+  if (sku && /[A-Z]/i.test(sku[1]) && /\d/.test(sku[1])) return normalizeCollectorCode(sku[1]);
+
+  // 5) Solo dígitos sueltos (último recurso; evita confundir rarezas [2])
+  const bare = s.match(/\b(\d{3,5})\b/);
+  if (bare) return bare[1];
+
   return null;
+}
+
+function normalizeCollectorCode(raw) {
+  let c = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
+  // EXR009 → EXR-009
+  if (/^[A-Z]{2,6}\d{2,4}[A-Z]?$/.test(c) && !c.includes('-')) {
+    c = c.replace(/^([A-Z]{2,6})(\d)/, '$1-$2');
+  }
+  return c.slice(0, 24);
 }
 
 function detectYear(text) {

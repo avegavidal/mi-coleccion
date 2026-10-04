@@ -56,9 +56,16 @@ export function buildLooseQueries(item) {
   const fullName = cleanPart(item.name);
   const tcg = isTcgCardItem(item);
 
-  // Orden pensado para marketplaces: serie+personaje suele encontrar más
-  // que fabricante+SKU (Amazon a menudo no indexa el número de artículo).
   const candidates = [];
+
+  // Cartas: el código de coleccionista es la señal más fiable (EXR-009)
+  if (tcg && itemNumber) {
+    candidates.push(itemNumber);
+    candidates.push(joinUnique([itemNumber, franchise || series || 'TCGPlayer'].filter(Boolean)));
+    candidates.push(`${itemNumber} TCGPlayer`);
+    if (manufacturer) candidates.push(joinUnique([manufacturer, itemNumber]));
+  }
+
   if (!tcg && (softName || fullName)) {
     const buyBase = softName || fullName;
     candidates.push(`${buyBase} buy`);
@@ -74,12 +81,15 @@ export function buildLooseQueries(item) {
   if (!tcg && softName && !/\b(figure|figura|banpresto|nendoroid)\b/i.test(softName)) {
     candidates.push(`${softName} figure buy`);
   }
-  if (tcg && softName) candidates.push(`${softName} TCG`);
+  if (tcg && softName && !itemNumber) candidates.push(`${softName} TCG`);
+  if (tcg && softName && itemNumber && !softName.toUpperCase().includes(itemNumber.toUpperCase())) {
+    candidates.push(joinUnique([softName, itemNumber]));
+  }
   if (franchise && character) {
     candidates.push(joinUnique(tcg ? [franchise, character] : [franchise, character, 'figure', 'buy']));
   }
-  if (manufacturer && itemNumber) candidates.push(joinUnique([manufacturer, itemNumber]));
-  if (itemNumber && (series || franchise || character)) {
+  if (!tcg && manufacturer && itemNumber) candidates.push(joinUnique([manufacturer, itemNumber]));
+  if (itemNumber && (series || franchise || character) && !(tcg && itemNumber)) {
     candidates.push(joinUnique([itemNumber, series || franchise || character]));
   }
   if (manufacturer && (character || franchise) && !(series && character)) {
@@ -405,8 +415,8 @@ export function buildInstantMarket(item, opts = {}) {
     ? filterLinks(buildShopLinksForQuery(query, { tcg })).slice(0, tcg ? 8 : 6)
     : [];
   const preferredIds = tcg
-    ? ['tcgplayer', 'cardmarket', 'pricecharting', 'ebay-sold']
-    : ['ebay-sold', 'amazon-us', 'amazon-jp', 'amiami', 'mercari-us', 'yahoo-jp'];
+    ? ['tcgplayer', 'cardmarket', 'pricecharting', 'mercari-jp', 'ebay-sold']
+    : ['ebay-sold', 'mercari-jp', 'amiami', 'yahoo-jp', 'amazon-jp', 'amazon-us', 'mercari-us'];
   const queryGroups = queries.map((q) => ({
     query: q,
     links: filterLinks(buildShopLinksForQuery(q, { tcg })).filter((l) => preferredIds.includes(l.id))

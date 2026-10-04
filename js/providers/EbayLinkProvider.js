@@ -13,7 +13,10 @@ const EXPLICIT_CARD_CATEGORY_RE = /\b(tcg|trading\s*cards?|cartas?\s*(tcg|colecc
 const CARD_GAME_RE = /\b(pokemon|pokémon|yu-?gi-?oh|magic:?\s*the\s*gathering|\bmtg\b|one\s*piece\s*(card|tcg|optcg)|digimon\s*(card|tcg)|lorcana|flesh\s*and\s*blood|cardfight|vanguard|weiss\s*schwarz|battle\s*spirits|dragon\s*ball\s*(super\s*)?(card|fusion\s*world)|dbs\s*fw|union\s*arena|tcgplayer|cardmarket)\b/i;
 
 /** Pistas de producto-carta (número de coleccionista, rareza, etc.). */
-const CARD_PRODUCT_RE = /\b(trading\s*card|\bsingle\b|holo|reverse\s*holo|full\s*art|alt\s*art|secret\s*rare|ultra\s*rare|illustration\s*rare|\bir\b|sar|near\s*mint|\bnm\b|psa\s*\d|cgc\s*\d|\d{1,3}\s*\/\s*\d{2,3})\b/i;
+const CARD_PRODUCT_RE = /\b(trading\s*card|\bsingle\b|holo|reverse\s*holo|full\s*art|alt\s*art|secret\s*rare|ultra\s*rare|illustration\s*rare|\bir\b|sar|near\s*mint|\bnm\b|psa\s*\d|cgc\s*\d|\d{1,3}\s*\/\s*\d{2,3}|ex\s*resource|resource\s*token|\btoken\b)\b/i;
+
+/** Código tipo carta: EXR-009, OP01-001, ST01-015, UA25BT-001 */
+export const TCG_COLLECTOR_CODE_RE = /\b([A-Z]{2,6}\d{0,2}[-_/][A-Z]?\d{2,4}(?:[-_/]\d{2,4})?[A-Z]?)\b/i;
 
 /**
  * Detecta si la pieza parece una carta TCG (no una figura del mismo franchise).
@@ -29,6 +32,7 @@ export function isTcgCardItem(itemOrText) {
       itemOrText?.franchise,
       itemOrText?.name,
       itemOrText?.manufacturer,
+      itemOrText?.item_number,
       itemOrText?.collections?.name,
       itemOrText?.note
     ].filter(Boolean).join(' ');
@@ -45,10 +49,17 @@ export function isTcgCardItem(itemOrText) {
     return true;
   }
 
+  // Código de coleccionista típico de TCG (EXR-009, OP01-001…)
+  const code = typeof itemOrText === 'object' && itemOrText
+    ? String(itemOrText.item_number || '')
+    : '';
+  if (code && TCG_COLLECTOR_CODE_RE.test(code)) return true;
+  if (TCG_COLLECTOR_CODE_RE.test(blob) && !FIGURE_SIGNAL_RE.test(blob)) return true;
+
   if (/\b(trading\s*cards?|tcg\b|cartas?\s*tcg)\b/i.test(blob)) return true;
   if (CARD_PRODUCT_RE.test(blob) && CARD_GAME_RE.test(blob)) return true;
   // Solo juego de cartas + palabra card/carta (no franchise solo)
-  if (CARD_GAME_RE.test(blob) && /\b(cards?|cartas?|single|holo)\b/i.test(blob)) return true;
+  if (CARD_GAME_RE.test(blob) && /\b(cards?|cartas?|single|holo|token|resource)\b/i.test(blob)) return true;
   // Categoría/series explícitas tipo Weiss Schwarz sin figura
   if (/\b(weiss\s*schwarz|cardfight\s*vanguard|union\s*arena|flesh\s*and\s*blood)\b/i.test(blob)) {
     return true;
@@ -61,28 +72,42 @@ export function isTcgCardItem(itemOrText) {
  */
 export function buildVisualMarketLinks(imageUrl) {
   const image = imageUrl ? String(imageUrl).trim() : '';
-  if (!image) return [];
-  const imgEnc = encodeURIComponent(image);
-  return [
-    {
-      id: 'google-lens',
-      region: 'VIS',
-      label: 'Buscar precio por foto',
-      kind: 'visual',
-      primary: true,
-      url: `https://lens.google.com/uploadbyurl?url=${imgEnc}`,
-      hint: 'Google Lens identifica la figura/carta y muestra anuncios parecidos.'
-    },
-    {
-      id: 'bing-visual',
-      region: 'VIS',
-      label: 'Bing Visual (foto)',
-      kind: 'visual',
-      primary: true,
-      url: `https://www.bing.com/images/search?view=detailv2&iss=sbi&form=SBIVSP&sbisrc=UrlPaste&q=imgurl:${imgEnc}`,
-      hint: 'Alternativa si Lens no abre bien en Safari.'
-    }
-  ];
+  const links = [];
+  if (image) {
+    const imgEnc = encodeURIComponent(image);
+    links.push(
+      {
+        id: 'google-lens',
+        region: 'VIS',
+        label: 'Buscar precio por foto',
+        kind: 'visual',
+        primary: true,
+        url: `https://lens.google.com/uploadbyurl?url=${imgEnc}`,
+        hint: 'Google Lens identifica la figura/carta y muestra anuncios parecidos.'
+      },
+      {
+        id: 'bing-visual',
+        region: 'VIS',
+        label: 'Bing Visual (foto)',
+        kind: 'visual',
+        primary: true,
+        url: `https://www.bing.com/images/search?view=detailv2&iss=sbi&form=SBIVSP&sbisrc=UrlPaste&q=imgurl:${imgEnc}`,
+        hint: 'Alternativa si Lens no abre bien en Safari.'
+      }
+    );
+  }
+  // Mercari JP: la búsqueda por imagen nativa no acepta URL remota.
+  // La app ya busca precios con la misma foto (Gemini + scrape); este enlace es respaldo manual.
+  links.push({
+    id: 'mercari-jp-photo',
+    region: 'VIS',
+    label: 'Mercari JP (foto)',
+    kind: 'visual',
+    primary: true,
+    url: 'https://jp.mercari.com/search',
+    hint: 'Respaldo: si el precio automático no aparece, abre Mercari → cámara → sube la misma foto.'
+  });
+  return links;
 }
 
 /**
@@ -168,6 +193,14 @@ export function buildShopLinksForQuery(query, opts = {}) {
       hint: q
     },
     {
+      id: 'mercari-jp',
+      region: 'JP',
+      label: 'Mercari JP',
+      kind: 'asking',
+      url: `https://jp.mercari.com/search?keyword=${enc}&status=on_sale`,
+      hint: q
+    },
+    {
       id: 'mercari-us',
       region: 'US',
       label: 'Mercari US',
@@ -181,14 +214,6 @@ export function buildShopLinksForQuery(query, opts = {}) {
       label: 'Yahoo Auctions JP',
       kind: 'auction',
       url: `https://auctions.yahoo.co.jp/search/search?va=${yahooQ}&fixed=0&exflg=1&b=1`,
-      hint: q
-    },
-    {
-      id: 'mercari-jp',
-      region: 'JP',
-      label: 'Mercari JP',
-      kind: 'asking',
-      url: `https://jp.mercari.com/search?keyword=${enc}`,
       hint: q
     },
     {
@@ -457,27 +482,39 @@ export function matchBelongsToItem(match, item) {
   const name = String(item.name || '').toLowerCase().trim();
 
   // Personaje: si lo conocemos, el título debe incluir al menos un token fuerte
+  const charParts = character.length >= 3
+    ? character.split(/[\s,/&+|]+/).map((p) => p.replace(/[^a-z0-9áéíóúñ]/gi, '')).filter((p) => p.length >= 3)
+    : [];
+  const charHits = charParts.filter((p) => title.includes(p)).length;
   if (character.length >= 3) {
-    const parts = character.split(/\s+/).map((p) => p.replace(/[^a-z0-9áéíóúñ]/gi, '')).filter((p) => p.length >= 3);
-    const charHit = parts.some((p) => title.includes(p)) || title.includes(character);
+    const charHit = charHits > 0 || title.includes(character);
     if (!charHit) return false;
   }
 
-  // Serie / línea (Glitter, Nendoroid, Gxmateria…): al menos un token si hay personaje+serie
-  if (series.length >= 4 && character.length >= 3) {
+  // Varios personajes en el título (Gon+Killua+Hisoka) → ya es un ancla fuerte
+  const strongCharMatch = charParts.length >= 2 && charHits >= Math.min(2, charParts.length);
+
+  // Serie / línea: exigir token salvo ancla fuerte de personajes o alias cercanos (Ichiban≈Ichibansho)
+  if (series.length >= 4 && character.length >= 3 && !strongCharMatch) {
     const seriesParts = series.split(/[\s&×x]+/).map((p) => p.replace(/[^a-z0-9]/gi, '')).filter((p) => p.length >= 4);
-    if (seriesParts.length && !seriesParts.some((p) => title.includes(p))) {
-      // Permitir si el nombre oficial completo aparece
-      if (!(name.length >= 10 && name.split(/\s+/).filter((t) => t.length > 3).slice(0, 3).every((t) => title.includes(t)))) {
-        return false;
-      }
+    const seriesHit = seriesParts.some((p) => title.includes(p)
+      || (p.length >= 6 && [...title.matchAll(/[a-z0-9]{4,}/g)].some((m) => {
+        const t = m[0];
+        return t.startsWith(p.slice(0, 6)) || p.startsWith(t.slice(0, 6));
+      })));
+    if (seriesParts.length && !seriesHit) {
+      const nameParts = name.split(/\s+/).map((t) => t.replace(/[^a-z0-9]/gi, '')).filter((t) => t.length > 3).slice(0, 4);
+      const nameHits = nameParts.filter((t) => title.includes(t)
+        || (t.length >= 6 && title.includes(t.slice(0, 6)))).length;
+      if (nameHits < Math.min(2, nameParts.length)) return false;
     }
   }
 
   const tokens = identityTokens(item);
-  if (tokens.length >= 3) {
-    const hits = tokens.filter((t) => title.includes(t)).length;
-    // Exige ~40% de tokens de identidad (mín. 2)
+  if (tokens.length >= 3 && !strongCharMatch) {
+    const hits = tokens.filter((t) => title.includes(t)
+      || (t.length >= 6 && title.includes(t.slice(0, 6)))).length;
+    // Exige ~35% de tokens de identidad (mín. 2)
     if (hits < Math.max(2, Math.ceil(tokens.length * 0.35))) return false;
   }
   return true;
@@ -489,11 +526,22 @@ export function matchBelongsToItem(match, item) {
  * @param {{ title?: string, query?: string }} [match]
  */
 export function preferredSearchQuery(item, match = null) {
+  const code = String(item?.item_number || '').trim();
+  const tcg = isTcgCardItem(item);
+
+  // Cartas: buscar por código de coleccionista (abre TCGPlayer/eBay correctos)
+  if (tcg && code.length >= 4) {
+    const game = String(item?.franchise || item?.series || '').trim();
+    const q = game ? `${code} ${game}` : code;
+    return q.slice(0, 140);
+  }
+
   const fromItem = [
     item?.name,
     [item?.series, item?.character_name || item?.character].filter(Boolean).join(' '),
     [item?.manufacturer, item?.character_name || item?.character].filter(Boolean).join(' '),
-    [item?.franchise, item?.character_name || item?.character].filter(Boolean).join(' ')
+    [item?.franchise, item?.character_name || item?.character].filter(Boolean).join(' '),
+    code && item?.manufacturer ? `${item.manufacturer} ${code}` : ''
   ]
     .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
     .filter((s) => s.length >= 5);
@@ -518,12 +566,21 @@ export function listingLinkMeta(match, item = null) {
   const source = storeLabel(match?.source);
   const raw = normalizeMarketUrl(match?.url);
   const belongs = matchBelongsToItem(match, item);
-  // Solo abrir /itm/ si lo scrapamos nosotros (urlTrusted). Los de Gemini suelen 404.
-  const trustedExact = match?.urlTrusted === true
-    && isPlausibleListingUrl(raw)
-    && belongs;
+  // Precio scrapado de esa ficha → abrirla siempre (el listado ya filtró irrelevantes).
+  // No exigir belongs aquí: si falla, el usuario ve precio pero el click no hacía nada útil.
+  const scrapedExact = (match?.urlTrusted === true || match?.priceVerified === true)
+    && isPlausibleListingUrl(raw);
 
-  if (trustedExact) {
+  if (scrapedExact) {
+    return {
+      url: raw,
+      exact: true,
+      label: `Abrir anuncio en ${source} →`
+    };
+  }
+
+  // URL de ficha plausible (p. ej. Mercari) aunque no esté marcada trusted
+  if (raw && isPlausibleListingUrl(raw) && belongs && match?.linkExact) {
     return {
       url: raw,
       exact: true,
@@ -538,7 +595,7 @@ export function listingLinkMeta(match, item = null) {
     query: searchQ,
     url: '',
     urlTrusted: false
-  }, item);
+  }, item) || (isOpenableStoreUrl(raw) ? raw : '');
   return {
     url,
     exact: false,
@@ -554,7 +611,8 @@ export function listingLinkMeta(match, item = null) {
  */
 export function storeLinkForMatch(match, item = null) {
   const direct = normalizeMarketUrl(match?.url);
-  if (match?.urlTrusted && isPlausibleListingUrl(direct) && matchBelongsToItem(match, item)) {
+  // Ficha scrapada: abrir siempre esa URL
+  if ((match?.urlTrusted || match?.priceVerified) && isPlausibleListingUrl(direct)) {
     return direct;
   }
 
@@ -563,6 +621,7 @@ export function storeLinkForMatch(match, item = null) {
     return isOpenableStoreUrl(direct) && !isDirectListingUrl(direct) ? direct : '';
   }
   const s = String(match?.source || '').toLowerCase().replace(/\s+/g, '');
+  const matchUrl = String(match?.url || '');
   const tcg = isTcgCardItem({
     source: match?.source,
     name: title,
@@ -579,8 +638,8 @@ export function storeLinkForMatch(match, item = null) {
     else if (s.includes('pricechart')) id = 'pricecharting';
     else if (s.includes('amazon') && s.includes('jp')) id = 'amazon-jp';
     else if (s.includes('amazon')) id = 'amazon-us';
-    else if (s.includes('mercari') && s.includes('jp')) id = 'mercari-jp';
-    else if (s.includes('mercari')) id = 'mercari-us';
+    else if (s.includes('mercari') && (s.includes('jp') || /jp\.mercari/.test(matchUrl))) id = 'mercari-jp';
+    else if (s.includes('mercari') || /mercari\.com/i.test(matchUrl)) id = 'mercari-us';
     else if (s.includes('yahoo')) id = 'yahoo-jp';
     else if (s.includes('amiami')) id = 'amiami';
     else if (s.includes('mandarake')) id = 'mandarake';

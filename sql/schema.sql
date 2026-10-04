@@ -76,6 +76,24 @@ CREATE INDEX IF NOT EXISTS items_manufacturer_idx ON public.items(user_id, manuf
 CREATE INDEX IF NOT EXISTS items_quantity_idx ON public.items(user_id, quantity);
 
 -- -----------------------------------------------------------------------------
+-- Relación N:N pieza ↔ categorías (collection_id en items = primaria / legacy)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.item_collections (
+  item_id UUID NOT NULL REFERENCES public.items(id) ON DELETE CASCADE,
+  collection_id UUID NOT NULL REFERENCES public.collections(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (item_id, collection_id)
+);
+
+CREATE INDEX IF NOT EXISTS item_collections_user_id_idx
+  ON public.item_collections(user_id);
+CREATE INDEX IF NOT EXISTS item_collections_collection_id_idx
+  ON public.item_collections(collection_id);
+CREATE INDEX IF NOT EXISTS item_collections_item_id_idx
+  ON public.item_collections(item_id);
+
+-- -----------------------------------------------------------------------------
 -- Fotografías + embeddings (CLIP ViT-B/32 → 512 dims)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.item_images (
@@ -168,9 +186,9 @@ ON CONFLICT (id) DO NOTHING;
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.recognition_settings (
   user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  high_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.820,
-  medium_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.700,
-  low_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.550,
+  high_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.880,
+  medium_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.780,
+  low_similarity_threshold NUMERIC(4, 3) NOT NULL DEFAULT 0.580,
   match_count INTEGER NOT NULL DEFAULT 12,
   active_model_id TEXT REFERENCES public.embedding_models(id),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -320,6 +338,7 @@ GRANT EXECUTE ON FUNCTION public.match_item_images(vector, FLOAT, INT) TO authen
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.collections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.item_collections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.item_images ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wishlist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.identification_history ENABLE ROW LEVEL SECURITY;
@@ -368,6 +387,23 @@ CREATE POLICY "items_update_own" ON public.items
 DROP POLICY IF EXISTS "items_delete_own" ON public.items;
 CREATE POLICY "items_delete_own" ON public.items
   FOR DELETE TO authenticated USING (user_id = auth.uid());
+
+-- Item ↔ categories (N:N)
+DROP POLICY IF EXISTS "item_collections_select_own" ON public.item_collections;
+CREATE POLICY "item_collections_select_own" ON public.item_collections
+  FOR SELECT TO authenticated USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "item_collections_insert_own" ON public.item_collections;
+CREATE POLICY "item_collections_insert_own" ON public.item_collections
+  FOR INSERT TO authenticated WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "item_collections_delete_own" ON public.item_collections;
+CREATE POLICY "item_collections_delete_own" ON public.item_collections
+  FOR DELETE TO authenticated USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "item_collections_update_own" ON public.item_collections;
+CREATE POLICY "item_collections_update_own" ON public.item_collections
+  FOR UPDATE TO authenticated USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 
 -- Item images
 DROP POLICY IF EXISTS "item_images_select_own" ON public.item_images;
@@ -496,6 +532,13 @@ ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_currency TEXT;
 ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_source TEXT;
 ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_query TEXT;
 ALTER TABLE public.items ADD COLUMN IF NOT EXISTS market_checked_at TIMESTAMPTZ;
+
+-- Migración N:N desde collection_id legacy (idempotente)
+INSERT INTO public.item_collections (item_id, collection_id, user_id)
+SELECT i.id, i.collection_id, i.user_id
+FROM public.items i
+WHERE i.collection_id IS NOT NULL
+ON CONFLICT (item_id, collection_id) DO NOTHING;
 
 -- =============================================================================
 -- FIN DEL ESQUEMA
