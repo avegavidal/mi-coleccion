@@ -1,13 +1,27 @@
-import { el, emptyState, formatDate, formatMoneyDual } from '../utils/dom.js';
+import { el, emptyState, formatDate, formatMoneyDual, forceAppUpdate, toast } from '../utils/dom.js';
 import { getDashboardStats, listItems } from '../services/collectionService.js';
 import { enrichItemsWithThumbs } from '../services/exportService.js';
 import { classifyDeal } from '../services/marketPriceService.js';
 
+function updateAppButton() {
+  return el('button', {
+    type: 'button',
+    className: 'btn btn-primary btn-block',
+    text: 'Actualizar app (borrar caché)',
+    onClick: async () => {
+      toast('Borrando caché…', 'info');
+      await forceAppUpdate({ hard: true });
+    }
+  });
+}
+
 export async function renderDashboard(root) {
+  const ver = window.APP_CONFIG?.APP_VERSION || '?';
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Mi Colección' }),
-      el('p', { className: 'page-sub', text: 'Tu vitrina, fotos y mercado en un solo lugar.' })
+      el('p', { className: 'page-sub', text: 'Tu vitrina, fotos y mercado en un solo lugar.' }),
+      el('p', { className: 'muted small', text: `Versión ${ver}` })
     ]),
     el('a', { href: '#/identify', className: 'identify-hero-btn' }, [
       el('span', { className: 'identify-icon', text: '📷' }),
@@ -69,13 +83,21 @@ export async function renderDashboard(root) {
       }
     } catch (listErr) {
       recentHost.innerHTML = '';
-      recentHost.append(el('p', {
-        className: 'error-text',
-        text: listErr.message || 'No se pudieron cargar las piezas recientes'
-      }));
+      recentHost.append(el('div', { className: 'notice notice-warn' }, [
+        el('p', { className: 'error-text', text: listErr.message || 'No se pudieron cargar las piezas recientes' }),
+        updateAppButton()
+      ]));
     }
   } catch (err) {
-    statsEl.innerHTML = `<p class="error-text">${err.message}</p>`;
+    statsEl.innerHTML = '';
+    statsEl.append(el('div', { className: 'notice notice-warn' }, [
+      el('p', { className: 'error-text', text: err.message || 'Error al cargar' }),
+      el('p', {
+        className: 'muted small',
+        text: 'Si ves un error de “embed / collections”, tu iPhone tiene JS en caché. Pulsa actualizar.'
+      }),
+      updateAppButton()
+    ]));
   }
 }
 

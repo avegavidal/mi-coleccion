@@ -1,4 +1,4 @@
-import { el, emptyState, toast, setBusy, compressImageUpload, formatMoney } from '../utils/dom.js';
+import { el, emptyState, toast, setBusy, compressImageUpload, formatMoney, forceAppUpdate } from '../utils/dom.js';
 import {
   listWishlist, createWishlistItem, deleteWishlistItem, withSignedWishlistPhotos
 } from '../services/wishlistService.js';
@@ -333,22 +333,8 @@ export async function renderSettings(root) {
   root.querySelector('#force-app-update')?.addEventListener('click', async () => {
     try {
       setBusy(root.querySelector('#force-app-update'), true);
-      localStorage.removeItem('mi_coleccion_build_v');
-      sessionStorage.clear();
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map((r) => r.unregister()));
-      }
-      if (window.caches) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map((k) => caches.delete(k)));
-      }
-      toast('Caché borrada — recargando…', 'ok');
-      setTimeout(() => {
-        const url = new URL(location.href);
-        url.searchParams.set('_b', String(Date.now()));
-        location.replace(url.toString());
-      }, 400);
+      toast('Borrando caché…', 'info');
+      await forceAppUpdate({ hard: true });
     } catch (err) {
       toast(err.message || 'No se pudo actualizar', 'error');
       setBusy(root.querySelector('#force-app-update'), false);

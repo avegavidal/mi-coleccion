@@ -29,6 +29,39 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
+ * Borra SW + Cache API y recarga (para iPhone atascado en JS viejo).
+ * @param {{ hard?: boolean }} [opts]
+ */
+export async function forceAppUpdate(opts = {}) {
+  try {
+    localStorage.removeItem('mi_coleccion_build_v');
+    localStorage.removeItem('mi_coleccion_sw_reloaded');
+    if (opts.hard) sessionStorage.clear();
+  } catch {
+    // ignore
+  }
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {
+    // ignore
+  }
+  const url = new URL(location.href);
+  url.searchParams.set('_b', String(Date.now()));
+  location.replace(url.toString());
+}
+
+/**
  * Abre una tienda fuera de la PWA.
  * Evita window.open(..., 'noopener') — en Chrome/Safari eso se bloquea como popup.
  * @param {string} url

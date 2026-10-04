@@ -8,37 +8,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Mi Colección" />
   <meta name="description" content="Administra tu colección de figuras e identifica piezas por similitud visual." />
-  <link rel="manifest" href="./manifest.json?v=60" />
+  <link rel="manifest" href="./manifest.json?v=61" />
   <link rel="apple-touch-icon" href="./assets/icons/icon-180.png" />
   <link rel="icon" type="image/png" href="./assets/icons/icon-192.png" />
-  <meta name="mi-coleccion-build" content="1.6.20" />
-  <script>
-    // Fuerza salida del SW/cache viejo (iPhone PWA a menudo sigue con modules 1.5.x)
-    (function () {
-      var BUILD = '1.6.20';
-      var KEY = 'mi_coleccion_build_v';
-      try {
-        if (localStorage.getItem(KEY) === BUILD) return;
-        localStorage.setItem(KEY, BUILD);
-        var done = Promise.resolve();
-        if ('serviceWorker' in navigator) {
-          done = navigator.serviceWorker.getRegistrations().then(function (regs) {
-            return Promise.all(regs.map(function (r) { return r.unregister(); }));
-          });
-        }
-        done.then(function () {
-          if (!window.caches) return;
-          return caches.keys().then(function (keys) {
-            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
-          });
-        }).then(function () {
-          var url = new URL(location.href);
-          url.searchParams.set('_b', BUILD.replace(/\W/g, ''));
-          location.replace(url.toString());
-        }).catch(function () {});
-      } catch (e) {}
-    })();
-  </script>
+  <meta name="mi-coleccion-build" content="1.6.21" />
   <script>
     (function () {
       try {
@@ -56,10 +29,41 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./css/styles.css?v=60" />
+  <link rel="stylesheet" href="./css/styles.css?v=61" />
   <title>Mi Colección</title>
+  <style>
+    #force-update-bar {
+      display: none;
+      position: sticky;
+      top: 0;
+      z-index: 9999;
+      padding: 10px 12px;
+      background: #b45309;
+      color: #fff;
+      font-family: Manrope, system-ui, sans-serif;
+      font-size: 0.92rem;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #force-update-bar.show { display: flex; }
+    #force-update-bar button {
+      border: 0;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 700;
+      background: #fff;
+      color: #9a3412;
+      cursor: pointer;
+    }
+  </style>
 </head>
 <body>
+  <div id="force-update-bar" role="status">
+    <span id="force-update-msg">Hay una versión nueva. Actualiza para corregir errores.</span>
+    <button type="button" id="btn-force-update-html">Actualizar ahora</button>
+  </div>
+
   <div id="offline-banner" class="offline-banner hidden">Sin conexión. Puedes ver la interfaz; identificación y subidas requieren Internet.</div>
   <div id="config-warning" class="config-warning hidden">
     Configura <code>js/config.js</code> con tu URL y anon key de Supabase. Ver README.
@@ -69,6 +73,7 @@
     <header id="top-bar" class="top-bar hidden">
       <a href="#/dashboard" class="brand">Mi Colección</a>
       <div class="top-actions">
+        <button type="button" id="btn-force-update-top" class="icon-btn" aria-label="Actualizar app" title="Actualizar app">↻</button>
         <a href="#/collections" class="icon-btn" aria-label="Categorías" title="Categorías">▣</a>
         <a href="#/settings" class="icon-btn" aria-label="Configuración">⚙</a>
         <a href="#/account" class="icon-btn" aria-label="Cuenta">👤</a>
@@ -89,7 +94,60 @@
 
   <div id="toast-host" class="toast-host"></div>
 
-  <script src="./js/config.js?v=60"></script>
-  <script type="module" src="./js/app.js?v=60"></script>
+  <script src="./js/config.js?v=61"></script>
+  <script>
+    (function () {
+      var EXPECTED = '1.6.21';
+      function clearAndReload() {
+        try {
+          localStorage.removeItem('mi_coleccion_build_v');
+          localStorage.removeItem('mi_coleccion_sw_reloaded');
+        } catch (e) {}
+        var chain = Promise.resolve();
+        if ('serviceWorker' in navigator) {
+          chain = navigator.serviceWorker.getRegistrations().then(function (regs) {
+            return Promise.all(regs.map(function (r) { return r.unregister(); }));
+          });
+        }
+        return chain.then(function () {
+          if (!window.caches) return;
+          return caches.keys().then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          });
+        }).then(function () {
+          var url = new URL(location.href);
+          url.searchParams.set('_b', String(Date.now()));
+          location.replace(url.toString());
+        }).catch(function () {
+          location.reload();
+        });
+      }
+
+      window.__forceAppUpdate = clearAndReload;
+
+      var bar = document.getElementById('force-update-bar');
+      var msg = document.getElementById('force-update-msg');
+      var btn = document.getElementById('btn-force-update-html');
+      var topBtn = document.getElementById('btn-force-update-top');
+      if (btn) btn.addEventListener('click', clearAndReload);
+      if (topBtn) topBtn.addEventListener('click', clearAndReload);
+
+      var actual = (window.APP_CONFIG && window.APP_CONFIG.APP_VERSION) || '';
+      if (actual !== EXPECTED) {
+        if (msg) msg.textContent = 'Versión ' + (actual || '?') + ' — necesitas ' + EXPECTED;
+        if (bar) bar.classList.add('show');
+        // Auto-intento una sola vez si el config quedó viejo en caché
+        try {
+          if (sessionStorage.getItem('mi_coleccion_force_reload') !== EXPECTED) {
+            sessionStorage.setItem('mi_coleccion_force_reload', EXPECTED);
+            clearAndReload();
+          }
+        } catch (e) {}
+      } else {
+        try { localStorage.setItem('mi_coleccion_build_v', EXPECTED); } catch (e) {}
+      }
+    })();
+  </script>
+  <script type="module" src="./js/app.js?v=61"></script>
 </body>
 </html>
