@@ -314,8 +314,46 @@ export async function renderSettings(root) {
       ]),
       el('p', { className: 'muted', text: 'La importación crea piezas nuevas sin fotografías/embeddings.' })
     ]),
-    el('p', { className: 'muted', text: `Versión ${window.APP_CONFIG?.APP_VERSION || '1.0.0'}` })
+    el('section', { className: 'section' }, [
+      el('h2', { text: 'App' }),
+      el('p', { className: 'muted', text: `Versión ${window.APP_CONFIG?.APP_VERSION || '1.0.0'}` }),
+      el('button', {
+        type: 'button',
+        className: 'btn btn-primary btn-block',
+        id: 'force-app-update',
+        text: 'Actualizar app (borrar caché)'
+      }),
+      el('p', {
+        className: 'muted small',
+        text: 'Si ves errores viejos en el iPhone, pulsa aquí y vuelve a abrir desde el icono.'
+      })
+    ])
   ]));
+
+  root.querySelector('#force-app-update')?.addEventListener('click', async () => {
+    try {
+      setBusy(root.querySelector('#force-app-update'), true);
+      localStorage.removeItem('mi_coleccion_build_v');
+      sessionStorage.clear();
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+      toast('Caché borrada — recargando…', 'ok');
+      setTimeout(() => {
+        const url = new URL(location.href);
+        url.searchParams.set('_b', String(Date.now()));
+        location.replace(url.toString());
+      }, 400);
+    } catch (err) {
+      toast(err.message || 'No se pudo actualizar', 'error');
+      setBusy(root.querySelector('#force-app-update'), false);
+    }
+  });
 
   root.querySelector('#theme-picker')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-theme]');

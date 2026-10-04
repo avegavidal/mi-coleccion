@@ -1,5 +1,5 @@
-/* Service Worker — network-first para HTML/JS/CSS (evita UI vieja en iPhone) */
-const CACHE = 'mi-coleccion-v59';
+/* Service Worker — JS/CSS/HTML siempre red (sin cache) para no atrapar versiones viejas en iPhone */
+const CACHE = 'mi-coleccion-v60';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'
@@ -14,13 +14,18 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+      Promise.all(keys.map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type === 'CLEAR_ALL') {
+    event.waitUntil(
+      caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+    );
+  }
 });
 
 function isAppShell(url) {
@@ -53,34 +58,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // App shell: siempre red primero (así ves Google / Face ID / mercado nuevo)
+  // App shell: solo red, sin guardar en Cache API (evita 1.5.9 eterno en PWA)
   if (isAppShell(url)) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(request))
+      fetch(request, { cache: 'no-store' }).catch(() => caches.match(request))
     );
     return;
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => {
-      const fetchPromise = fetch(request)
-        .then((response) => {
-          if (response && response.ok && url.origin === self.location.origin) {
-            const clone = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
+    fetch(request)
+      .then((response) => {
+        if (response && response.ok && url.origin === self.location.origin && !isAppShell(url)) {
+          const clone = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request))
   );
 });
