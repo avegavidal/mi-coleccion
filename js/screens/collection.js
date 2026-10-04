@@ -104,8 +104,7 @@ export async function renderCollection(root) {
         el('option', { value: 'name', text: 'Nombre' }),
         el('option', { value: 'quantity', text: 'Cantidad' }),
         el('option', { value: 'value', text: 'Valor' })
-      ]),
-      el('button', { type: 'button', className: 'btn btn-ghost', id: 'apply-filters', text: 'Aplicar' })
+      ])
     ]),
     el('div', { className: 'card-grid', id: 'items-grid' }),
     el('div', { className: 'load-more-wrap', id: 'load-more-wrap' })
@@ -120,6 +119,7 @@ export async function renderCollection(root) {
   let offset = 0;
   let exhausted = false;
   let loading = false;
+  let reloadQueued = false;
 
   const filtersFromUi = () => ({
     search: root.querySelector('#q').value,
@@ -142,7 +142,10 @@ export async function renderCollection(root) {
   };
 
   const load = async ({ append = false } = {}) => {
-    if (loading) return;
+    if (loading) {
+      if (!append) reloadQueued = true;
+      return;
+    }
     loading = true;
     const grid = root.querySelector('#items-grid');
     const moreBtn = root.querySelector('#load-more');
@@ -181,17 +184,26 @@ export async function renderCollection(root) {
       loading = false;
       const b = root.querySelector('#load-more');
       if (b) setBusy(b, false);
+      if (reloadQueued) {
+        reloadQueued = false;
+        load();
+      }
     }
   };
 
-  root.querySelector('#apply-filters').addEventListener('click', () => load());
+  root.querySelector('#filter-collection').addEventListener('change', () => load());
+  root.querySelector('#sort').addEventListener('change', () => load());
   root.querySelector('#q').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') load();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(searchTimer);
+      load();
+    }
   });
   let searchTimer = null;
   root.querySelector('#q').addEventListener('input', () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => load(), 450);
+    searchTimer = setTimeout(() => load(), 300);
   });
   await load();
 }

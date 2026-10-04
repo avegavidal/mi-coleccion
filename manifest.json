@@ -2,7 +2,7 @@
   "name": "Mi Colección",
   "short_name": "Colección",
   "description": "Administra figuras y coleccionables. Identifica por similitud visual.",
-  "start_url": "./index.html?v=16022",
+  "start_url": "./index.html?v=16023",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
