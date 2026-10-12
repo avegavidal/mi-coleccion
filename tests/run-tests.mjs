@@ -1257,13 +1257,12 @@ test('alta masiva: ruta add-bulk + multi file + identify + save', () => {
   const bulk = readFileSync(join(root, 'js/screens/addBulk.js'), 'utf8');
   assert(/export async function renderAddBulk/.test(bulk));
   assert(/multiple/.test(bulk));
-  assert(/skipCrop:\s*true/.test(bulk));
+  assert(/skipCrop:\s*false/.test(bulk));
   assert(/identifyFigureFromPhoto/.test(bulk));
   assert(/createItem/.test(bulk));
   assert(/uploadItemImage/.test(bulk));
   assert(/CONCURRENCY\s*=\s*2/.test(bulk));
   assert(/collection_ids/.test(bulk));
-  assert(/skipCrop:\s*false/.test(bulk));
   assert(/capture="environment"/.test(bulk) || /capture:\s*'environment'/.test(bulk));
   assert(/bulk-another|Tomar otra foto/.test(bulk));
   assert(/prepareImageForAnalysis/.test(bulk));
