@@ -42,17 +42,26 @@ export async function renderAddBulk(root) {
       el('h1', { text: 'Agregar varias' }),
       el('p', {
         className: 'page-sub',
-        text: 'Elige muchas fotos (sin límite). La IA nombra cada una; revisas y guardas el lote.'
+        text: 'Abre la cámara y dispara todas las que quieras, o elige varias de la galería. La IA nombra cada una.'
       })
     ]),
     el('div', { className: 'bulk-toolbar' }, [
-      el('label', {
+      el('button', {
+        type: 'button',
         className: 'btn btn-primary',
-        html: 'Galería (varias)<input type="file" accept="image/*" multiple id="bulk-gallery" hidden>'
+        id: 'bulk-open-cam',
+        text: '📷 Cámara (varias)'
       }),
       el('label', {
         className: 'btn btn-ghost',
-        html: '+ Foto<input type="file" accept="image/*" capture="environment" id="bulk-cam" hidden>'
+        html: 'Galería<input type="file" accept="image/*" multiple id="bulk-gallery" hidden>'
+      }),
+      el('input', {
+        type: 'file',
+        accept: 'image/*',
+        capture: 'environment',
+        id: 'bulk-cam-fallback',
+        hidden: true
       }),
       el('button', {
         type: 'button',
@@ -212,6 +221,7 @@ export async function renderAddBulk(root) {
       identifyRunning = false;
       setProgress(false);
       recount();
+      if (rows.some((r) => r.status === 'queued')) runIdentifyQueue();
     }
   };
 
@@ -313,11 +323,36 @@ export async function renderAddBulk(root) {
     e.target.value = '';
     if (files?.length) enqueueFiles(files);
   });
-  root.querySelector('#bulk-cam')?.addEventListener('change', (e) => {
+
+  const camFallback = root.querySelector('#bulk-cam-fallback');
+  /** Tras cada captura nativa, reabre la cámara hasta que el usuario cancele. */
+  let nativeCamLoop = false;
+  camFallback?.addEventListener('change', (e) => {
     const files = e.target.files;
     e.target.value = '';
-    if (files?.length) enqueueFiles(files);
+    if (files?.length) {
+      enqueueFiles(files);
+      if (nativeCamLoop) {
+        setTimeout(() => camFallback.click(), 280);
+      }
+    } else {
+      nativeCamLoop = false;
+    }
   });
+
+  root.querySelector('#bulk-open-cam')?.addEventListener('click', async () => {
+    const ok = await openMultiShotCamera({
+      onCapture: (file) => {
+        enqueueFiles([file]);
+      }
+    });
+    if (!ok && camFallback) {
+      nativeCamLoop = true;
+      toast('Dispara una tras otra; cancela en la cámara cuando termines', 'info');
+      camFallback.click();
+    }
+  });
+
   root.querySelector('#bulk-clear')?.addEventListener('click', () => {
     if (!rows.length) return;
     if (!confirm(`¿Vaciar la cola de ${rows.length} foto${rows.length === 1 ? '' : 's'}?`)) return;
@@ -362,6 +397,133 @@ function categoryChecks(collections) {
       )
     )
   ]);
+}
+
+/**
+ * Cámara en vivo: misma sesión, varias capturas.
+ * @param {{ onCapture: (file: File)=>void }} opts
+ * @returns {Promise<boolean>} true si abrió getUserMedia
+ */
+async function openMultiShotCamera(opts) {
+  if (!navigator.mediaDevices?.getUserMedia) return false;
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1440 }
+      }
+    });
+  } catch (err) {
+    console.warn('[bulk-cam] getUserMedia falló', err);
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    let shotCount = 0;
+    let shutterLock = false;
+    let closed = false;
+
+    const video = el('video', {
+      className: 'bulk-cam-video',
+      autoplay: true,
+      playsinline: true,
+      muted: true
+    });
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.srcObject = stream;
+
+    const countEl = el('span', { className: 'bulk-cam-count', text: '0 capturas' });
+    const flashEl = el('div', { className: 'bulk-cam-flash', hidden: true });
+
+    const stop = () => {
+      if (closed) return;
+      closed = true;
+      try {
+        stream.getTracks().forEach((t) => t.stop());
+      } catch { /* ignore */ }
+      video.srcObject = null;
+      overlay.remove();
+      document.body.classList.remove('bulk-cam-open');
+      resolve(true);
+    };
+
+    const captureFrame = async () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) throw new Error('Cámara aún no lista');
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, w, h);
+      const blob = await new Promise((res, rej) => {
+        canvas.toBlob(
+          (b) => (b ? res(b) : rej(new Error('No se pudo capturar'))),
+          'image/jpeg',
+          0.92
+        );
+      });
+      return new File([blob], `cam_${Date.now()}.jpg`, { type: 'image/jpeg' });
+    };
+
+    const onShutter = async () => {
+      if (shutterLock || closed) return;
+      shutterLock = true;
+      try {
+        const file = await captureFrame();
+        shotCount += 1;
+        countEl.textContent = `${shotCount} captura${shotCount === 1 ? '' : 's'}`;
+        flashEl.hidden = false;
+        requestAnimationFrame(() => {
+          setTimeout(() => { flashEl.hidden = true; }, 90);
+        });
+        opts.onCapture?.(file);
+      } catch (err) {
+        toast(err?.message || 'No se pudo capturar', 'error');
+      } finally {
+        setTimeout(() => { shutterLock = false; }, 160);
+      }
+    };
+
+    const overlay = el('div', {
+      className: 'bulk-cam-overlay',
+      role: 'dialog',
+      'aria-label': 'Cámara para varias figuras'
+    }, [
+      el('header', { className: 'bulk-cam-header' }, [
+        el('p', { className: 'bulk-cam-title', text: 'Apunta y dispara' }),
+        countEl,
+        el('button', {
+          type: 'button',
+          className: 'btn btn-ghost bulk-cam-done',
+          text: 'Listo',
+          onClick: stop
+        })
+      ]),
+      el('div', { className: 'bulk-cam-stage' }, [video, flashEl]),
+      el('div', { className: 'bulk-cam-controls' }, [
+        el('p', {
+          className: 'muted small bulk-cam-hint',
+          text: 'Cada disparo se agrega al lote. Sigue hasta terminar.'
+        }),
+        el('button', {
+          type: 'button',
+          className: 'bulk-cam-shutter',
+          'aria-label': 'Capturar',
+          onClick: onShutter
+        })
+      ])
+    ]);
+
+    document.body.classList.add('bulk-cam-open');
+    document.body.append(overlay);
+    video.play?.().catch(() => {});
+  });
 }
 
 /**
