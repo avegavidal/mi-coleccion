@@ -744,6 +744,12 @@ html[data-theme="dark"] .btn-primary {
   place-items: center;
 }
 
+.btn-bulk {
+  font-size: 1.35rem;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
 /* Lote: dos tarjetas + plus (más claro que "++") */
 .icon-bulk-add {
   position: relative;
