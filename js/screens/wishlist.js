@@ -334,7 +334,10 @@ export async function renderSettings(root) {
     try {
       setBusy(root.querySelector('#force-app-update'), true);
       toast('Borrando caché…', 'info');
-      await forceAppUpdate({ hard: true });
+      try {
+        sessionStorage.setItem('mi_coleccion_update_pass', '1');
+      } catch { /* ignore */ }
+      location.href = new URL(`update.html?_=${Date.now()}`, location.href).href;
     } catch (err) {
       toast(err.message || 'No se pudo actualizar', 'error');
       setBusy(root.querySelector('#force-app-update'), false);

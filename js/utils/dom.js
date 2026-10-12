@@ -28,26 +28,55 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+const UPDATE_PASS_KEY = 'mi_coleccion_update_pass';
+
 /**
- * Borra SW + Cache API y recarga (para iPhone atascado en JS viejo).
+ * Borra SW + Cache API + intenta invalidar caché HTTP, luego recarga index.html.
+ * En iPhone suele hacer falta un 2º pase (auto) para soltar el HTML viejo.
  * @param {{ hard?: boolean }} [opts]
  */
 export async function forceAppUpdate(opts = {}) {
+  let pass = 0;
   try {
-    localStorage.removeItem('mi_coleccion_build_v');
-    localStorage.removeItem('mi_coleccion_sw_reloaded');
-    if (opts.hard) sessionStorage.clear();
+    pass = parseInt(sessionStorage.getItem(UPDATE_PASS_KEY) || '0', 10) || 0;
   } catch {
     // ignore
   }
+
   try {
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister()));
+    localStorage.removeItem('mi_coleccion_build_v');
+    localStorage.removeItem('mi_coleccion_sw_reloaded');
+    localStorage.removeItem('mi_coleccion_skip_update');
+    if (opts.hard) {
+      const keepPass = String(Math.max(pass, 1));
+      sessionStorage.clear();
+      sessionStorage.setItem(UPDATE_PASS_KEY, keepPass);
+    } else {
+      sessionStorage.removeItem('mi_coleccion_skip_update');
     }
   } catch {
     // ignore
   }
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(
+        regs.map(async (r) => {
+          try {
+            r.waiting?.postMessage?.({ type: 'SKIP_WAITING' });
+            r.installing?.postMessage?.({ type: 'SKIP_WAITING' });
+          } catch {
+            // ignore
+          }
+          await r.unregister();
+        })
+      );
+    }
+  } catch {
+    // ignore
+  }
+
   try {
     if (window.caches) {
       const keys = await caches.keys();
@@ -56,9 +85,48 @@ export async function forceAppUpdate(opts = {}) {
   } catch {
     // ignore
   }
-  const url = new URL(location.href);
-  url.searchParams.set('_b', String(Date.now()));
-  location.replace(url.toString());
+
+  const bust = String(Date.now());
+  // Rellena la caché HTTP del navegador con copias frescas (misma clave que usará el HTML nuevo).
+  const warm = [
+    `index.html?_=${bust}`,
+    `version.json?_=${bust}`,
+    `js/config.js?v=${bust}`,
+    `js/app.js?v=${bust}`,
+    `service-worker.js?v=${bust}`,
+    `css/styles.css?v=${bust}`
+  ];
+  await Promise.all(
+    warm.map((path) =>
+      fetch(new URL(path, location.href), { cache: 'reload', credentials: 'same-origin' }).catch(() => null)
+    )
+  );
+
+  try {
+    sessionStorage.setItem(UPDATE_PASS_KEY, pass >= 1 ? '2' : '1');
+  } catch {
+    // ignore
+  }
+
+  // Misma ruta fiable que el botón Actualizar
+  location.href = new URL(`update.html?_=${bust}`, location.href).href;
+}
+
+/**
+ * Si el primer Actualizar no soltó el HTML viejo, completa el 2º pase al arrancar.
+ */
+export function continueAppUpdateIfNeeded() {
+  try {
+    const pass = sessionStorage.getItem(UPDATE_PASS_KEY);
+    if (pass === '1') {
+      location.href = new URL(`update.html?_=${Date.now()}`, location.href).href;
+      return true;
+    }
+    if (pass === '2' || pass === 'done') sessionStorage.removeItem(UPDATE_PASS_KEY);
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 /**

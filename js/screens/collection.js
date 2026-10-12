@@ -92,13 +92,12 @@ export async function renderCollection(root) {
         el('p', { className: 'page-sub', text: 'Busca, filtra y organiza.' })
       ]),
       el('div', { className: 'btn-row' }, [
-        el('a', { href: '#/collections', className: 'btn btn-ghost btn-round', text: '▣' }),
         el('a', {
           href: '#/add-bulk',
-          className: 'btn btn-ghost btn-round',
+          className: 'btn btn-ghost btn-round btn-bulk',
           title: 'Agregar varias',
           'aria-label': 'Agregar varias',
-          html: '<span class="icon-bulk-add" aria-hidden="true"></span>'
+          text: '⧉'
         }),
         el('a', { href: '#/add', className: 'btn btn-primary btn-round', text: '+' })
       ])

@@ -1,5 +1,5 @@
 /* Service Worker — JS/CSS/HTML siempre red (sin cache) para no atrapar versiones viejas en iPhone */
-const CACHE = 'mi-coleccion-v68';
+const CACHE = 'mi-coleccion-v69';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'
@@ -37,6 +37,7 @@ function isAppShell(url) {
     p.endsWith('.css') ||
     p.endsWith('.html') ||
     p.endsWith('version.json') ||
+    p.endsWith('update.html') ||
     p.endsWith('/') ||
     /\/mi-coleccion\/?$/.test(p)
   );

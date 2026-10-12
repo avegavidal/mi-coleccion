@@ -10,7 +10,11 @@ function updateAppButton() {
     text: 'Actualizar app (borrar caché)',
     onClick: async () => {
       toast('Borrando caché…', 'info');
-      await forceAppUpdate({ hard: true });
+      // update.html es más fiable en iPhone que solo location.replace
+      try {
+        sessionStorage.setItem('mi_coleccion_update_pass', '1');
+      } catch { /* ignore */ }
+      location.href = new URL(`update.html?_=${Date.now()}`, location.href).href;
     }
   });
 }

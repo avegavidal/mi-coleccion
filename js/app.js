@@ -1,9 +1,14 @@
 import { defineRoute, startRouter, setAuthUser, navigate, getAuthUser } from './utils/router.js';
 import { onAuthStateChange, getSession, signOut } from './services/authService.js';
-import { refreshUsdJpyRate } from './utils/dom.js';
+import { refreshUsdJpyRate, continueAppUpdateIfNeeded } from './utils/dom.js';
 import { promptIfAppUpdateAvailable } from './utils/appUpdate.js';
 import { applyTheme } from './utils/theme.js';
 import { renderLogin, renderRecover } from './screens/auth.js';
+
+// 2º pase de actualización iPhone (si el primero dejó HTML viejo en caché HTTP)
+if (continueAppUpdateIfNeeded()) {
+  /* recarga en curso */
+}
 import { renderDashboard } from './screens/dashboard.js';
 import {
   renderCollection, renderAdd, renderItemDetail, renderEdit,
@@ -113,7 +118,7 @@ async function boot() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.28').replace(/\W/g, '');
+      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.29').replace(/\W/g, '');
       const reg = await navigator.serviceWorker.register(`./service-worker.js?v=${swVer}`);
       await reg.update();
       // No activar/recargar solo: el usuario elige en el popup de versión.
