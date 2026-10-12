@@ -8,10 +8,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Mi Colección" />
   <meta name="description" content="Administra tu colección de figuras e identifica piezas por similitud visual." />
-  <link rel="manifest" href="./manifest.json?v=66" />
+  <link rel="manifest" href="./manifest.json?v=67" />
   <link rel="apple-touch-icon" href="./assets/icons/icon-180.png" />
   <link rel="icon" type="image/png" href="./assets/icons/icon-192.png" />
-  <meta name="mi-coleccion-build" content="1.6.26" />
+  <meta name="mi-coleccion-build" content="1.6.27" />
   <script>
     (function () {
       try {
@@ -29,7 +29,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./css/styles.css?v=66" />
+  <link rel="stylesheet" href="./css/styles.css?v=67" />
   <title>Mi Colección</title>
   <style>
     #force-update-bar {
@@ -56,12 +56,72 @@
       color: #9a3412;
       cursor: pointer;
     }
+    #boot-update-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 14000;
+      place-items: center;
+      padding: 20px;
+      background: rgba(12, 18, 24, 0.48);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #boot-update-modal.show { display: grid; }
+    #boot-update-modal .card {
+      width: min(100%, 380px);
+      padding: 22px 20px 18px;
+      border-radius: 18px;
+      background: #fff;
+      color: #0c1218;
+      font-family: Manrope, system-ui, sans-serif;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+    }
+    #boot-update-modal h2 {
+      margin: 0 0 10px;
+      font-family: Sora, Manrope, sans-serif;
+      font-size: 1.25rem;
+    }
+    #boot-update-modal p { margin: 0 0 8px; line-height: 1.45; }
+    #boot-update-modal .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    #boot-update-modal button {
+      min-height: 44px;
+      border-radius: 12px;
+      border: 1px solid #d0d7de;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #boot-update-modal .btn-primary {
+      border: 0;
+      background: #0f766e;
+      color: #fff;
+    }
+    #boot-update-modal .btn-ghost { background: #f4f6f8; }
   </style>
 </head>
 <body>
   <div id="force-update-bar" role="status">
     <span id="force-update-msg">Hay una versión nueva. Actualiza para corregir errores.</span>
     <button type="button" id="btn-force-update-html">Actualizar ahora</button>
+  </div>
+
+  <div id="boot-update-modal" role="dialog" aria-modal="true" aria-labelledby="boot-update-title">
+    <div class="card">
+      <h2 id="boot-update-title">Nueva versión disponible</h2>
+      <p id="boot-update-body">Hay una versión más reciente.</p>
+      <p style="color:#64748b;font-size:0.9rem">Puedes actualizar ahora o seguir con esta versión por ahora.</p>
+      <div class="actions">
+        <button type="button" class="btn-ghost" id="boot-update-later">Seguir con esta</button>
+        <button type="button" class="btn-primary" id="boot-update-now">Actualizar</button>
+      </div>
+    </div>
   </div>
 
   <div id="offline-banner" class="offline-banner hidden">Sin conexión. Puedes ver la interfaz; identificación y subidas requieren Internet.</div>
@@ -94,14 +154,15 @@
 
   <div id="toast-host" class="toast-host"></div>
 
-  <script src="./js/config.js?v=66"></script>
+  <script src="./js/config.js?v=67"></script>
   <script>
     (function () {
-      var EXPECTED = '1.6.26';
+      var EXPECTED = '1.6.27';
       function clearAndReload() {
         try {
           localStorage.removeItem('mi_coleccion_build_v');
           localStorage.removeItem('mi_coleccion_sw_reloaded');
+          sessionStorage.removeItem('mi_coleccion_skip_update');
         } catch (e) {}
         var chain = Promise.resolve();
         if ('serviceWorker' in navigator) {
@@ -132,22 +193,66 @@
       if (btn) btn.addEventListener('click', clearAndReload);
       if (topBtn) topBtn.addEventListener('click', clearAndReload);
 
+      // Desajuste HTML/config local: avisa, no fuerza recarga.
       var actual = (window.APP_CONFIG && window.APP_CONFIG.APP_VERSION) || '';
       if (actual !== EXPECTED) {
-        if (msg) msg.textContent = 'Versión ' + (actual || '?') + ' — necesitas ' + EXPECTED;
+        if (msg) msg.textContent = 'Versión ' + (actual || '?') + ' — hay ' + EXPECTED + ' disponible';
         if (bar) bar.classList.add('show');
-        // Auto-intento una sola vez si el config quedó viejo en caché
-        try {
-          if (sessionStorage.getItem('mi_coleccion_force_reload') !== EXPECTED) {
-            sessionStorage.setItem('mi_coleccion_force_reload', EXPECTED);
-            clearAndReload();
-          }
-        } catch (e) {}
       } else {
         try { localStorage.setItem('mi_coleccion_build_v', EXPECTED); } catch (e) {}
       }
+
+      function cmpVer(a, b) {
+        var pa = String(a || '').split(/[^\d]+/).filter(Boolean).map(function (n) { return parseInt(n, 10) || 0; });
+        var pb = String(b || '').split(/[^\d]+/).filter(Boolean).map(function (n) { return parseInt(n, 10) || 0; });
+        for (var i = 0; i < 3; i++) {
+          var d = (pa[i] || 0) - (pb[i] || 0);
+          if (d) return d;
+        }
+        return 0;
+      }
+
+      // Al entrar: si el servidor tiene versión más nueva, popup (Actualizar / Seguir).
+      (function checkRemoteVersion() {
+        if (!navigator.onLine) return;
+        var local = actual || EXPECTED;
+        var modal = document.getElementById('boot-update-modal');
+        var body = document.getElementById('boot-update-body');
+        var later = document.getElementById('boot-update-later');
+        var now = document.getElementById('boot-update-now');
+        if (!modal) return;
+        fetch('./version.json?_=' + Date.now(), { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            var remote = data && String(data.version || '').trim();
+            if (!remote || cmpVer(remote, local) <= 0) return;
+            try {
+              if (sessionStorage.getItem('mi_coleccion_skip_update') === remote) return;
+            } catch (e) {}
+            if (body) {
+              body.textContent = 'Hay una versión más reciente (' + remote + '). Estás en ' + local + '.';
+            }
+            modal.classList.add('show');
+            window.__bootUpdateShown = remote;
+            if (later) {
+              later.onclick = function () {
+                try { sessionStorage.setItem('mi_coleccion_skip_update', remote); } catch (e) {}
+                modal.classList.remove('show');
+              };
+            }
+            if (now) {
+              now.onclick = function () {
+                now.disabled = true;
+                now.textContent = 'Actualizando…';
+                try { sessionStorage.removeItem('mi_coleccion_skip_update'); } catch (e) {}
+                clearAndReload();
+              };
+            }
+          })
+          .catch(function () {});
+      })();
     })();
   </script>
-  <script type="module" src="./js/app.js?v=66"></script>
+  <script type="module" src="./js/app.js?v=67"></script>
 </body>
 </html>

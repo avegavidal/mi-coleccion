@@ -165,6 +165,8 @@ const required = [
   'js/utils/theme.js',
   'js/screens/categories.js',
   'js/screens/addBulk.js',
+  'js/utils/appUpdate.js',
+  'version.json',
   'sql/schema.sql',
   'assets/icons/icon-192.png',
   'assets/icons/icon-512.png',
@@ -1248,6 +1250,42 @@ test('collection usa lookupMarketPrice automático', () => {
 
 test('AutoMarketSearchProvider existe en integridad', () => {
   assert(existsSync(join(root, 'js/providers/AutoMarketSearchProvider.js')));
+});
+
+test('popup de nueva versión al entrar', () => {
+  const upd = readFileSync(join(root, 'js/utils/appUpdate.js'), 'utf8');
+  assert(/export function compareVersions/.test(upd));
+  assert(/export async function promptIfAppUpdateAvailable/.test(upd));
+  assert(/export function showUpdateModal/.test(upd));
+  assert(/version\.json/.test(upd));
+  assert(/cache:\s*'no-store'/.test(upd));
+  assert(/Seguir con esta/.test(upd));
+  assert(/Actualizar/.test(upd));
+  assert(/forceAppUpdate/.test(upd));
+  const app = readFileSync(join(root, 'js/app.js'), 'utf8');
+  assert(/promptIfAppUpdateAvailable/.test(app));
+  const html = readFileSync(join(root, 'index.html'), 'utf8');
+  assert(/boot-update-modal/.test(html));
+  assert(/Seguir con esta/.test(html));
+  assert(/version\.json\?_/.test(html));
+  assert(!/mi_coleccion_force_reload/.test(html));
+  const ver = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8'));
+  const cfg = readFileSync(join(root, 'js/config.js'), 'utf8');
+  assert(ver.version);
+  assert(cfg.includes(`APP_VERSION: '${ver.version}'`) || cfg.includes(`APP_VERSION: "${ver.version}"`));
+  const sw = readFileSync(join(root, 'service-worker.js'), 'utf8');
+  assert(/version\.json/.test(sw));
+  assert(/No skipWaiting aquí/.test(sw));
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.app-update-overlay/.test(css));
+  assert(/\.app-update-card/.test(css));
+});
+
+await testAsync('compareVersions ordena semver simple', async () => {
+  const mod = await import(pathToFileURL(join(root, 'js/utils/appUpdate.js')).href);
+  assert(mod.compareVersions('1.6.27', '1.6.26') > 0);
+  assert(mod.compareVersions('1.6.26', '1.6.27') < 0);
+  assert(mod.compareVersions('1.6.27', '1.6.27') === 0);
 });
 
 test('alta masiva: ruta add-bulk + multi file + identify + save', () => {

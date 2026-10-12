@@ -1,13 +1,14 @@
 /* Service Worker — JS/CSS/HTML siempre red (sin cache) para no atrapar versiones viejas en iPhone */
-const CACHE = 'mi-coleccion-v66';
+const CACHE = 'mi-coleccion-v67';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'
 ];
 
 self.addEventListener('install', (event) => {
+  // No skipWaiting aquí: el usuario confirma actualización en el popup.
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)).then(() => self.skipWaiting())
+    caches.open(CACHE).then((cache) => cache.addAll(PRECACHE))
   );
 });
 
@@ -35,6 +36,7 @@ function isAppShell(url) {
     p.endsWith('.js') ||
     p.endsWith('.css') ||
     p.endsWith('.html') ||
+    p.endsWith('version.json') ||
     p.endsWith('/') ||
     /\/mi-coleccion\/?$/.test(p)
   );

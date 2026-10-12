@@ -1,6 +1,7 @@
 import { defineRoute, startRouter, setAuthUser, navigate, getAuthUser } from './utils/router.js';
 import { onAuthStateChange, getSession, signOut } from './services/authService.js';
 import { refreshUsdJpyRate } from './utils/dom.js';
+import { promptIfAppUpdateAvailable } from './utils/appUpdate.js';
 import { applyTheme } from './utils/theme.js';
 import { renderLogin, renderRecover } from './screens/auth.js';
 import { renderDashboard } from './screens/dashboard.js';
@@ -107,19 +108,18 @@ async function boot() {
 
   refreshUsdJpyRate().catch(() => {});
 
+  // Al entrar: avisar si el servidor tiene una versión más nueva (sin forzar).
+  promptIfAppUpdateAvailable().catch(() => {});
+
   if ('serviceWorker' in navigator) {
     try {
-      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.26').replace(/\W/g, '');
+      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.27').replace(/\W/g, '');
       const reg = await navigator.serviceWorker.register(`./service-worker.js?v=${swVer}`);
       await reg.update();
-      // Forzar activación del SW nuevo (iPhone a veces se queda con el viejo)
-      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        // Una sola recarga tras actualizar SW
-        if (sessionStorage.getItem('mi_coleccion_sw_reloaded') === swVer) return;
-        sessionStorage.setItem('mi_coleccion_sw_reloaded', swVer);
-        location.reload();
-      });
+      // No activar/recargar solo: el usuario elige en el popup de versión.
+      if (reg.waiting) {
+        promptIfAppUpdateAvailable().catch(() => {});
+      }
     } catch (err) {
       console.warn('SW no registrado', err);
     }

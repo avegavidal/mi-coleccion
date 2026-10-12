@@ -2856,3 +2856,50 @@ body.cropper-open {
 .page-header h1 {
   font-weight: 800;
 }
+
+/* Popup: nueva versión disponible */
+.app-update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 14000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--ink, #0c1218) 48%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.app-update-card {
+  width: min(100%, 380px);
+  padding: 22px 20px 18px;
+  border-radius: var(--radius-xl, 18px);
+  background: var(--bg-1, #fff);
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  box-shadow: var(--shadow-md, 0 12px 40px rgba(0, 0, 0, 0.18));
+  color: var(--ink, #0c1218);
+}
+
+.app-update-card h2 {
+  margin: 0 0 10px;
+  font-family: var(--font-display, Sora, sans-serif);
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.app-update-body {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+.app-update-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.app-update-actions .btn {
+  width: 100%;
+}
