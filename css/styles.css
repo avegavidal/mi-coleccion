@@ -740,6 +740,43 @@ html[data-theme="dark"] .btn-primary {
   font-size: 1.7rem;
   padding: 0;
   flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+/* Lote: dos tarjetas + plus (más claro que "++") */
+.icon-bulk-add {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 18px;
+}
+
+.icon-bulk-add::before,
+.icon-bulk-add::after {
+  content: '';
+  position: absolute;
+  border: 1.75px solid currentColor;
+  border-radius: 3px;
+  box-sizing: border-box;
+}
+
+.icon-bulk-add::before {
+  width: 13px;
+  height: 11px;
+  left: 0;
+  top: 0;
+  opacity: 0.45;
+}
+
+.icon-bulk-add::after {
+  width: 13px;
+  height: 11px;
+  right: 0;
+  bottom: 0;
+  background:
+    linear-gradient(currentColor, currentColor) center / 7px 1.75px no-repeat,
+    linear-gradient(currentColor, currentColor) center / 1.75px 7px no-repeat;
 }
 
 .btn-sm {
