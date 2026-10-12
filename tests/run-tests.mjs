@@ -1263,16 +1263,15 @@ test('alta masiva: ruta add-bulk + multi file + identify + save', () => {
   assert(/uploadItemImage/.test(bulk));
   assert(/CONCURRENCY\s*=\s*2/.test(bulk));
   assert(/collection_ids/.test(bulk));
-  assert(/openMultiShotCamera/.test(bulk));
-  assert(/getUserMedia/.test(bulk));
-  assert(/bulk-open-cam/.test(bulk));
+  assert(/skipCrop:\s*false/.test(bulk));
+  assert(/capture="environment"/.test(bulk) || /capture:\s*'environment'/.test(bulk));
+  assert(/bulk-another|Tomar otra foto/.test(bulk));
+  assert(/prepareImageForAnalysis/.test(bulk));
   const col = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
   assert(/#\/add-bulk/.test(col));
   const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
   assert(/\.bulk-card/.test(css));
   assert(/\.bulk-list/.test(css));
-  assert(/\.bulk-cam-overlay/.test(css));
-  assert(/\.bulk-cam-shutter/.test(css));
 });
 
 await testAsync('autoSearch sin key responde empty/error estructurado', async () => {
