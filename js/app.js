@@ -8,6 +8,7 @@ import {
   renderCollection, renderAdd, renderItemDetail, renderEdit,
   renderDuplicates
 } from './screens/collection.js';
+import { renderAddBulk } from './screens/addBulk.js';
 import { renderCollectionsManage, renderCategoryDetail } from './screens/categories.js';
 import { renderIdentify, renderCompare } from './screens/identify.js';
 import { renderWishlist, renderStats, renderAccount, renderSettings } from './screens/wishlist.js';
@@ -19,6 +20,7 @@ defineRoute('recover', renderRecover, { public: true });
 defineRoute('dashboard', renderDashboard);
 defineRoute('collection', renderCollection);
 defineRoute('add', renderAdd);
+defineRoute('add-bulk', renderAddBulk);
 defineRoute('item', renderItemDetail);
 defineRoute('edit', renderEdit);
 defineRoute('collections', renderCollectionsManage);
@@ -107,7 +109,7 @@ async function boot() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.23').replace(/\W/g, '');
+      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.24').replace(/\W/g, '');
       const reg = await navigator.serviceWorker.register(`./service-worker.js?v=${swVer}`);
       await reg.update();
       // Forzar activación del SW nuevo (iPhone a veces se queda con el viejo)

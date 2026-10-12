@@ -164,6 +164,7 @@ const required = [
   'js/utils/imageCrop.js',
   'js/utils/theme.js',
   'js/screens/categories.js',
+  'js/screens/addBulk.js',
   'sql/schema.sql',
   'assets/icons/icon-192.png',
   'assets/icons/icon-512.png',
@@ -1247,6 +1248,26 @@ test('collection usa lookupMarketPrice automático', () => {
 
 test('AutoMarketSearchProvider existe en integridad', () => {
   assert(existsSync(join(root, 'js/providers/AutoMarketSearchProvider.js')));
+});
+
+test('alta masiva: ruta add-bulk + multi file + identify + save', () => {
+  const app = readFileSync(join(root, 'js/app.js'), 'utf8');
+  assert(/renderAddBulk/.test(app));
+  assert(/defineRoute\('add-bulk'/.test(app));
+  const bulk = readFileSync(join(root, 'js/screens/addBulk.js'), 'utf8');
+  assert(/export async function renderAddBulk/.test(bulk));
+  assert(/multiple/.test(bulk));
+  assert(/skipCrop:\s*true/.test(bulk));
+  assert(/identifyFigureFromPhoto/.test(bulk));
+  assert(/createItem/.test(bulk));
+  assert(/uploadItemImage/.test(bulk));
+  assert(/CONCURRENCY\s*=\s*2/.test(bulk));
+  assert(/collection_ids/.test(bulk));
+  const col = readFileSync(join(root, 'js/screens/collection.js'), 'utf8');
+  assert(/#\/add-bulk/.test(col));
+  const css = readFileSync(join(root, 'css/styles.css'), 'utf8');
+  assert(/\.bulk-card/.test(css));
+  assert(/\.bulk-list/.test(css));
 });
 
 await testAsync('autoSearch sin key responde empty/error estructurado', async () => {

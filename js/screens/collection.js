@@ -93,6 +93,7 @@ export async function renderCollection(root) {
       ]),
       el('div', { className: 'btn-row' }, [
         el('a', { href: '#/collections', className: 'btn btn-ghost btn-round', text: '▣' }),
+        el('a', { href: '#/add-bulk', className: 'btn btn-ghost btn-round', title: 'Agregar varias', text: '++</' }),
         el('a', { href: '#/add', className: 'btn btn-primary btn-round', text: '+' })
       ])
     ]),
@@ -215,7 +216,10 @@ export async function renderAdd(root, params = []) {
   root.append(el('div', { className: 'page' }, [
     el('header', { className: 'page-header' }, [
       el('h1', { text: 'Agregar pieza' }),
-      el('p', { className: 'page-sub', text: 'Toma la foto, recorta la figura y rellenamos el nombre.' })
+      el('p', { className: 'page-sub', text: 'Toma la foto, recorta la figura y rellenamos el nombre.' }),
+      el('p', {}, [
+        el('a', { href: '#/add-bulk', className: 'link', text: '¿Varias a la vez? Agregar en lote →' })
+      ])
     ]),
     el('form', { id: 'add-form', className: 'stack-form' }, [
       el('div', { className: 'photo-capture-block' }, [
