@@ -186,22 +186,44 @@ export async function renderAddBulk(root) {
     });
   };
 
+  const isImageFile = (f) => {
+    if (!f) return false;
+    if (f.type?.startsWith('image/')) return true;
+    // iOS a veces deja type vacío en fotos de cámara
+    return !f.type || /\.(jpe?g|png|heic|heif|webp|gif|bmp|tif?f)$/i.test(f.name || '');
+  };
+
+  /**
+   * Copia los File antes de vaciar el input (en iPhone FileList es live y queda vacía).
+   * @param {HTMLInputElement|null} input
+   * @returns {File[]}
+   */
+  const takeFilesFromInput = (input) => {
+    const list = input?.files ? [...input.files] : [];
+    if (input) input.value = '';
+    return list.filter(isImageFile);
+  };
+
   /**
    * Una o varias fotos: cada una pasa por el recorte (igual que alta simple).
    * @param {FileList|File[]} fileList
    * @param {{ offerAnother?: boolean }} [opts]
    */
   const enqueueFiles = async (fileList, opts = {}) => {
-    const files = [...(fileList || [])].filter((f) => f && f.type?.startsWith('image/'));
+    const files = [...(fileList || [])].filter(isImageFile);
     if (!files.length) {
       toast('No hay imágenes en la selección', 'info');
       return;
     }
-    if (prepareRunning) return;
+    if (prepareRunning) {
+      toast('Espera a terminar el recorte actual', 'info');
+      return;
+    }
 
     prepareRunning = true;
     recount();
     let added = 0;
+    let cancelled = 0;
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -216,13 +238,17 @@ export async function renderAddBulk(root) {
               ? `Recortar figura (${i + 1}/${files.length})`
               : 'Recortar figura'
           });
-          if (!prepared) continue;
+          if (!prepared) {
+            cancelled += 1;
+            continue;
+          }
           pushRow(prepared);
           added += 1;
           paintList();
           runIdentifyQueue();
         } catch (err) {
           console.warn('[bulk] prepare falló', err);
+          toast(err?.message || 'No se pudo usar esa foto', 'error');
         }
       }
     } finally {
@@ -232,16 +258,16 @@ export async function renderAddBulk(root) {
     }
 
     if (!added) {
-      toast('No se agregó ninguna foto', 'info');
+      toast(
+        cancelled ? 'Recorte cancelado — toma la foto de nuevo' : 'No se agregó ninguna foto',
+        'info'
+      );
       return;
     }
     toast(
       added === 1 ? 'Foto en cola — puedes tomar otra' : `${added} fotos en cola`,
       'ok'
     );
-    if (opts.offerAnother !== false && files.length === 1) {
-      // Deja el botón "Tomar otra" visible; no reabre sola para no interrumpir la revisión.
-    }
   };
 
   const runIdentifyQueue = async () => {
@@ -356,16 +382,16 @@ export async function renderAddBulk(root) {
     }
   };
 
-  camInput?.addEventListener('change', (e) => {
-    const files = e.target.files;
-    e.target.value = '';
-    if (files?.length) enqueueFiles(files, { offerAnother: true });
+  camInput?.addEventListener('change', () => {
+    const files = takeFilesFromInput(camInput);
+    if (files.length) enqueueFiles(files, { offerAnother: true });
+    else toast('No se recibió la foto de la cámara', 'info');
   });
 
-  galleryInput?.addEventListener('change', (e) => {
-    const files = e.target.files;
-    e.target.value = '';
-    if (files?.length) enqueueFiles(files, { offerAnother: false });
+  galleryInput?.addEventListener('change', () => {
+    const files = takeFilesFromInput(galleryInput);
+    if (files.length) enqueueFiles(files, { offerAnother: false });
+    else toast('No se recibieron imágenes', 'info');
   });
 
   anotherBtn?.addEventListener('click', () => openCamera());

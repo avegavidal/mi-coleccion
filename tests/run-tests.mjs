@@ -1296,6 +1296,7 @@ test('alta masiva: ruta add-bulk + multi file + identify + save', () => {
   assert(/export async function renderAddBulk/.test(bulk));
   assert(/multiple/.test(bulk));
   assert(/skipCrop:\s*false/.test(bulk));
+  assert(/takeFilesFromInput/.test(bulk));
   assert(/identifyFigureFromPhoto/.test(bulk));
   assert(/createItem/.test(bulk));
   assert(/uploadItemImage/.test(bulk));

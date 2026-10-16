@@ -413,14 +413,15 @@ export async function renderAdd(root, params = []) {
     return raw || 'Identificando el ítem por foto…';
   }
 
-  camInput?.addEventListener('change', (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = '';
+  camInput?.addEventListener('change', () => {
+    // Copiar File antes de vaciar: en iPhone FileList es live y se borra al limpiar value
+    const f = camInput.files?.[0] ? camInput.files[0] : null;
+    if (camInput) camInput.value = '';
     if (f) setPhoto(f);
   });
-  galleryInput?.addEventListener('change', (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = '';
+  galleryInput?.addEventListener('change', () => {
+    const f = galleryInput.files?.[0] ? galleryInput.files[0] : null;
+    if (galleryInput) galleryInput.value = '';
     if (f) setPhoto(f);
   });
   clearPhotoBtn?.addEventListener('click', () => {
@@ -880,8 +881,9 @@ export async function renderEdit(root, params) {
   }
 
   root.querySelector('#add-photo').addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+    const input = e.target;
+    const file = input.files?.[0] || null;
+    input.value = '';
     if (!file) return;
     const status = root.querySelector('#photo-status');
     try {
