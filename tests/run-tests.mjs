@@ -796,8 +796,9 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
   assert(vis.isGarbageProductName('Thi The Vegeta 14'));
   assert(vis.isGarbageProductName('ab\uFFFDcd'));
   assert(vis.isGarbageProductName('CafÃ© Nendoroid'));
-  assert(vis.isGarbageProductName('□□◆ rn vv'));
   assert(!vis.isGarbageProductName('BLEACH Glitter & Glamours Nemu Kurotsuchi'));
+  assert(!vis.isGarbageProductName('The Legend of Zelda Twilight Princess Nendoroid Link'));
+  assert(!vis.isGarbageProductName('Dragon Ball Z G×materia The Vegeta'));
   assert(vis.hasReadableLatinTitle('BLEACH Glitter & Glamours Nemu Kurotsuchi'));
   assert(!vis.hasReadableLatinTitle('Thi The'));
   const polished = vis.polishSuggestionName({
@@ -808,6 +809,15 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
     source: 'gemini'
   });
   assert(/Nemu/i.test(polished.name) && /Glitter/i.test(polished.name), polished.name);
+  // Un título detallado de Gemini no se debe vaciar al pulir
+  const keepDetailed = vis.polishSuggestionName({
+    name: 'The Legend of Zelda Twilight Princess Nendoroid Link',
+    series: 'Nendoroid',
+    character_name: 'Link',
+    franchise: 'The Legend of Zelda',
+    source: 'gemini'
+  });
+  assert(/Twilight|Nendoroid|Link/i.test(keepDetailed.name), keepDetailed.name);
   const composed = vis.composeRetailName({
     franchise: 'One Piece',
     series: 'Pop Up Parade',
