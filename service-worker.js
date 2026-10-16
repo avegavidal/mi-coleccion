@@ -1,5 +1,5 @@
 /* Service Worker — JS/CSS/HTML siempre red (sin cache) para no atrapar versiones viejas en iPhone */
-const CACHE = 'mi-coleccion-v70';
+const CACHE = 'mi-coleccion-v71';
 const PRECACHE = [
   './manifest.json',
   './assets/icons/icon-192.png'

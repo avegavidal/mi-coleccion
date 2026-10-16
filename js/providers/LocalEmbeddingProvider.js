@@ -32,25 +32,64 @@ function l2Normalize(vec) {
   return out;
 }
 
+/** CLIP usa ~224px; bajar a esto evita cuelgues de memoria en iPhone al hacer N embeddings. */
+const EMBED_MAX_SIDE = 384;
+
+/**
+ * @param {Blob|File|HTMLImageElement|HTMLCanvasElement|string} input
+ */
 async function blobToRawImage(input) {
   if (typeof input === 'string') {
     return RawImage.read(input);
   }
-  if (input instanceof HTMLImageElement || input instanceof HTMLCanvasElement) {
-    const canvas = document.createElement('canvas');
-    const w = input.naturalWidth || input.width;
-    const h = input.naturalHeight || input.height;
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(input, 0, 0);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-    return RawImage.fromBlob(blob);
+
+  // Camino preferido: redimensionar antes de CLIP (mucho menos RAM en lotes).
+  try {
+    let bitmap = null;
+    if (input instanceof HTMLImageElement || input instanceof HTMLCanvasElement) {
+      bitmap = await createImageBitmap(input);
+    } else if (input instanceof Blob || input instanceof File) {
+      bitmap = await createImageBitmap(input);
+    } else {
+      throw new Error('Tipo de imagen no soportado para embedding');
+    }
+    try {
+      const scale = Math.min(1, EMBED_MAX_SIDE / Math.max(bitmap.width, bitmap.height, 1));
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('No se pudo preparar imagen para embedding'))),
+          'image/jpeg',
+          0.85
+        );
+      });
+      return RawImage.fromBlob(blob);
+    } finally {
+      try { bitmap.close?.(); } catch { /* ignore */ }
+    }
+  } catch {
+    // Fallback (HEIC raro / createImageBitmap no disponible)
+    if (input instanceof HTMLImageElement || input instanceof HTMLCanvasElement) {
+      const canvas = document.createElement('canvas');
+      const w = input.naturalWidth || input.width;
+      const h = input.naturalHeight || input.height;
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(input, 0, 0);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      return RawImage.fromBlob(blob);
+    }
+    if (input instanceof Blob || input instanceof File) {
+      return RawImage.fromBlob(input);
+    }
+    throw new Error('Tipo de imagen no soportado para embedding');
   }
-  if (input instanceof Blob || input instanceof File) {
-    return RawImage.fromBlob(input);
-  }
-  throw new Error('Tipo de imagen no soportado para embedding');
 }
 
 export class LocalEmbeddingProvider extends EmbeddingProvider {
@@ -138,15 +177,19 @@ export class LocalEmbeddingProvider extends EmbeddingProvider {
     this._status = 'inferring';
 
     const raw = await blobToRawImage(image);
-    const inputs = await this._processor(raw);
-    const { image_embeds } = await this._model(inputs);
-
-    const data = image_embeds.data;
-    const vec = data instanceof Float32Array ? data : new Float32Array(data);
-    const normalized = l2Normalize(vec);
-
-    this._status = 'ready';
-    return normalized;
+    let inputs;
+    let output;
+    try {
+      inputs = await this._processor(raw);
+      output = await this._model(inputs);
+      const data = output.image_embeds.data;
+      const vec = data instanceof Float32Array ? data : new Float32Array(data);
+      return l2Normalize(vec);
+    } finally {
+      this._status = 'ready';
+      // Liberar refs para que el GC pueda recuperar WASM heap entre piezas del lote
+      try { inputs = null; output = null; } catch { /* ignore */ }
+    }
   }
 }
 

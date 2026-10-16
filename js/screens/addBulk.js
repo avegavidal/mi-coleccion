@@ -321,54 +321,131 @@ export async function renderAddBulk(root) {
     }
   };
 
+  const yieldToUi = () => new Promise((r) => setTimeout(r, 100));
+
+  const withTimeout = (promise, ms, message) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  };
+
+  const patchRowUi = (row) => {
+    const card = listEl?.querySelector(`[data-bulk-id="${row.id}"]`);
+    if (!card) {
+      paintList();
+      return;
+    }
+    const statusEl = card.querySelector('.bulk-status');
+    const noteEl = card.querySelector('.bulk-note');
+    if (statusEl) {
+      statusEl.className = `bulk-status is-${row.status}`;
+      statusEl.textContent = ({
+        queued: 'En cola',
+        identifying: 'Identificando…',
+        ready: 'Lista',
+        error: 'Revisar',
+        saving: 'Guardando…',
+        saved: 'Guardada'
+      })[row.status] || row.status;
+    }
+    if (noteEl) {
+      noteEl.textContent = [row.manufacturer, row.series, row.note].filter(Boolean).join(' · ') || '—';
+    }
+    card.classList.toggle('is-saved', row.status === 'saved');
+    card.classList.toggle('is-error', row.status === 'error');
+  };
+
   const saveAll = async () => {
     if (saveRunning) return;
-    const targets = rows.filter((r) => r.status !== 'saved' && r.name.trim() && r.file);
+    if (identifyRunning || prepareRunning) {
+      toast('Espera a que termine de identificar o recortar', 'info');
+      return;
+    }
+    const targets = rows.filter(
+      (r) => (r.status === 'ready' || r.status === 'error') && r.name.trim() && r.file
+    );
     if (!targets.length) {
-      toast('Nada para guardar: pon un nombre a cada pieza', 'info');
+      toast('Nada para guardar: pon un nombre a cada pieza lista', 'info');
       return;
     }
     saveRunning = true;
-    setBusy(saveBtn, true, 'Guardando…');
+    setBusy(saveBtn, true, `Guardando 0/${targets.length}…`);
     const collectionIds = readSharedCollectionIds();
     let ok = 0;
     let fail = 0;
+    // Una sola pieza a la vez + pausa: N embeddings seguidos colgaban el iPhone.
+    const PER_ITEM_MS = 180_000;
     try {
       for (let i = 0; i < targets.length; i++) {
         const row = targets[i];
+        const n = i + 1;
+        const total = targets.length;
         row.status = 'saving';
-        row.note = `Guardando ${i + 1}/${targets.length}…`;
-        paintList();
-        setProgress(true, `Guardando ${i + 1}/${targets.length}: ${row.name.slice(0, 40)}`);
+        row.note = `${n}/${total}: creando…`;
+        patchRowUi(row);
+        setProgress(true, `Guardando ${n}/${total}: ${row.name.slice(0, 36)}`);
+        if (saveBtn) saveBtn.textContent = `Guardando ${n}/${total}…`;
+        await yieldToUi();
+
         try {
-          const item = await createItem({
-            name: row.name.trim(),
-            collection_ids: collectionIds,
-            manufacturer: row.manufacturer || null,
-            franchise: row.franchise || null,
-            series: row.series || null,
-            item_number: row.item_number || null,
-            character_name: row.character_name || null,
-            category: row.category || null,
-            year: row.year || null,
-            quantity: 1
-          });
-          await uploadItemImage(item.id, row.file, 'frontal', () => {});
+          const item = await withTimeout(
+            createItem({
+              name: row.name.trim(),
+              collection_ids: collectionIds,
+              manufacturer: row.manufacturer || null,
+              franchise: row.franchise || null,
+              series: row.series || null,
+              item_number: row.item_number || null,
+              character_name: row.character_name || null,
+              category: row.category || null,
+              year: row.year || null,
+              quantity: 1
+            }),
+            45_000,
+            'No se pudo crear la pieza (red)'
+          );
+
+          row.note = `${n}/${total}: subiendo foto…`;
+          patchRowUi(row);
+          await yieldToUi();
+
+          await withTimeout(
+            uploadItemImage(item.id, row.file, 'frontal', (p) => {
+              const msg = p?.message || p?.stage || 'procesando';
+              row.note = `${n}/${total}: ${msg}`;
+              patchRowUi(row);
+              setProgress(true, `Guardando ${n}/${total}: ${msg}`);
+            }),
+            PER_ITEM_MS,
+            'Tardó demasiado en esta foto. Puedes reintentar solo esa pieza.'
+          );
+
           row.itemId = item.id;
           row.status = 'saved';
           row.note = 'Guardada';
           ok += 1;
+          try { URL.revokeObjectURL(row.objectUrl); } catch { /* ignore */ }
+          row.objectUrl = '';
+          row.file = null;
         } catch (err) {
+          console.warn('[bulk] save falló', err);
           row.status = 'error';
           row.note = err?.message || 'Error al guardar';
           fail += 1;
         }
-        paintList();
+        patchRowUi(row);
+        recount();
+        // Respirar entre piezas (CLIP/WASM en iPhone)
+        await yieldToUi();
+        await yieldToUi();
       }
     } finally {
       saveRunning = false;
       setBusy(saveBtn, false);
       setProgress(false);
+      paintList();
       recount();
     }
 
@@ -376,7 +453,7 @@ export async function renderAddBulk(root) {
       toast(`${ok} pieza${ok === 1 ? '' : 's'} guardada${ok === 1 ? '' : 's'}`, 'ok');
       navigate('collection', true);
     } else if (ok) {
-      toast(`Guardadas ${ok}, fallaron ${fail}`, 'info');
+      toast(`Guardadas ${ok}, fallaron ${fail}. Puedes reintentar las que fallaron.`, 'info');
     } else {
       toast('No se pudo guardar ninguna', 'error');
     }
@@ -467,10 +544,13 @@ function rowCard(row, hooks) {
   nameInput.addEventListener('input', () => hooks.onName(nameInput.value));
 
   return el('article', {
-    className: `bulk-card${row.status === 'saved' ? ' is-saved' : ''}${row.status === 'error' ? ' is-error' : ''}`
+    className: `bulk-card${row.status === 'saved' ? ' is-saved' : ''}${row.status === 'error' ? ' is-error' : ''}`,
+    dataset: { bulkId: row.id }
   }, [
     el('div', { className: 'bulk-card-photo' }, [
-      el('img', { src: row.objectUrl, alt: row.name || 'Foto' })
+      row.objectUrl
+        ? el('img', { src: row.objectUrl, alt: row.name || 'Foto' })
+        : el('span', { className: 'muted small', text: 'OK' })
     ]),
     el('div', { className: 'bulk-card-body' }, [
       el('div', { className: 'bulk-card-top' }, [
@@ -486,7 +566,7 @@ function rowCard(row, hooks) {
       ]),
       nameInput,
       el('p', {
-        className: 'muted small',
+        className: 'muted small bulk-note',
         text: [
           row.manufacturer,
           row.series,
