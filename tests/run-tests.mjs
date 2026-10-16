@@ -795,7 +795,11 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
   assert(best.name.includes('G×materia') || /materia/i.test(best.name), best.name);
   assert(vis.isGarbageProductName('Thi The Vegeta 14'));
   assert(vis.isGarbageProductName('ab\uFFFDcd'));
+  assert(vis.isGarbageProductName('CafÃ© Nendoroid'));
+  assert(vis.isGarbageProductName('□□◆ rn vv'));
   assert(!vis.isGarbageProductName('BLEACH Glitter & Glamours Nemu Kurotsuchi'));
+  assert(vis.hasReadableLatinTitle('BLEACH Glitter & Glamours Nemu Kurotsuchi'));
+  assert(!vis.hasReadableLatinTitle('Thi The'));
   const polished = vis.polishSuggestionName({
     name: 'Thi The',
     series: 'Glitter & Glamours',
@@ -804,6 +808,15 @@ await testAsync('preferBetterSuggestion prioriza nombre web sobre OCR basura', a
     source: 'gemini'
   });
   assert(/Nemu/i.test(polished.name) && /Glitter/i.test(polished.name), polished.name);
+  const composed = vis.composeRetailName({
+    franchise: 'One Piece',
+    series: 'Pop Up Parade',
+    character_name: 'Monkey D. Luffy'
+  });
+  assert(/Luffy/i.test(composed) && /Pop Up Parade/i.test(composed), composed);
+  const cleaned = vis.sanitizeProductName('  BLEACH\uFFFD  Glitter＆Glamours  Nemu  ');
+  assert(/Glitter\s*&\s*Glamours/i.test(cleaned) || /Glitter/i.test(cleaned), cleaned);
+  assert(!/\uFFFD/.test(cleaned));
   const fromMarket = vis.suggestionFromMarketMatches([
     { title: 'Dragon Ball Z G×materia The Vegeta Banpresto', price: 28, source: 'ebay' },
     { title: 'Thi The Vegeta 14', price: 5, source: 'other' }
