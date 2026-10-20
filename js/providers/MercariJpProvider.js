@@ -15,43 +15,62 @@ const JPY_TO_USD = 0.0067; // aproximado; el note guarda el yen original
  * @param {{ limit?: number, signal?: AbortSignal }} [opts]
  */
 export async function lookupMercariUsMarket(query, opts = {}) {
-  const q = String(query || '').trim();
-  if (!q) throw new Error('Falta consulta para Mercari US');
+  const primary = String(query || '').trim();
+  if (!primary) throw new Error('Falta consulta para Mercari US');
 
   const limit = opts.limit ?? 8;
-  const searchUrl = `https://www.mercari.com/search/?keyword=${encodeURIComponent(q)}`;
+  const altQueries = (opts.altQueries || [])
+    .map((s) => String(s || '').trim())
+    .filter((s) => s.length >= 3 && s.toLowerCase() !== primary.toLowerCase());
+  const tryQueries = [primary, ...altQueries].slice(0, 3);
+
   /** @type {object[]} */
   let matches = [];
+  let usedQuery = primary;
   const errors = [];
+  let searchUrl = `https://www.mercari.com/search/?keyword=${encodeURIComponent(primary)}`;
 
-  try {
-    // jina https es el más fiable para Mercari US; el pool de proxies a veces cuela homepage
-    let html = await fetchJinaHttps(searchUrl, opts.signal).catch(() => null);
-    if (!html) html = await fetchHtmlViaProxy(searchUrl, opts.signal);
-    matches = extractMercariUsMatches(html, q, { searchUrl });
-    const relevance = matches.filter((m) => queryTitleScore(m.title, q) >= 2).length;
-    if (relevance < 1) {
-      const direct = await fetchJinaHttps(searchUrl, opts.signal).catch(() => null);
-      if (direct) {
-        const again = extractMercariUsMatches(direct, q, { searchUrl });
-        if (again.filter((m) => queryTitleScore(m.title, q) >= 2).length > relevance) {
-          matches = again;
+  for (const q of tryQueries) {
+    searchUrl = `https://www.mercari.com/search/?keyword=${encodeURIComponent(q)}`;
+    try {
+      // jina https es el más fiable para Mercari US; el pool de proxies a veces cuela homepage
+      let html = await fetchJinaHttps(searchUrl, opts.signal).catch(() => null);
+      if (!html) html = await fetchHtmlViaProxy(searchUrl, opts.signal);
+      let found = extractMercariUsMatches(html, q, { searchUrl });
+      const relevance = found.filter((m) => queryTitleScore(m.title, q) >= 2).length;
+      if (relevance < 1) {
+        const direct = await fetchJinaHttps(searchUrl, opts.signal).catch(() => null);
+        if (direct) {
+          const again = extractMercariUsMatches(direct, q, { searchUrl });
+          if (again.filter((m) => queryTitleScore(m.title, q) >= 2).length > relevance) {
+            found = again;
+          }
         }
       }
+      const good = found.filter((m) => queryTitleScore(m.title, q) >= 2);
+      if (good.length || (!matches.length && found.length)) {
+        matches = found;
+        usedQuery = q;
+      }
+      if (good.length >= 1) break;
+    } catch (err) {
+      errors.push(`Mercari US: ${err.message || err}`);
     }
-  } catch (err) {
-    errors.push(`Mercari US: ${err.message || err}`);
   }
 
   const ranked = matches
     .filter((m) => Number(m.price) > 0)
-    .map((m) => ({ ...m, _qScore: queryTitleScore(m.title, q) }))
-    .sort((a, b) => b._qScore - a._qScore || a.price - b.price);
+    .map((m, idx) => ({
+      ...m,
+      _qScore: queryTitleScore(m.title, usedQuery),
+      _rank: Number.isFinite(m.searchRank) ? m.searchRank : idx
+    }))
+    .sort((a, b) => b._qScore - a._qScore || a._rank - b._rank || a.price - b.price);
   const bestScore = ranked[0]?._qScore ?? 0;
   const list = ranked
     .filter((m) => bestScore < 2 || m._qScore >= Math.max(1, bestScore - 2))
     .slice(0, limit)
-    .map(({ _qScore, ...m }) => m);
+    .map(({ _qScore, _rank, ...m }) => ({ ...m, query: usedQuery }));
 
   return {
     matches: list,
@@ -75,27 +94,29 @@ export function extractMercariUsMatches(html, query = '', ctx = {}) {
   /** @type {object[]} */
   const out = [];
   const seen = new Set();
+  let rank = 0;
 
   // jina markdown:
   // [![alt](https://u-mercari-images.../mID_1.jpg) Title $149.99](https://www.mercari.com/us/item/mID)
-  const mdRe = /\]\((https?:\/\/[^)\s]*mercdn\.net[^)\s]*)\)\s*([^$\n\]]{5,160}?)\s+\$([\d,]+(?:\.\d{1,2})?)\s*\]\(\s*(https?:\/\/(?:www\.)?mercari\.com\/(?:us\/)?item\/(m?[a-z0-9]{6,})[^)\s]*)/gi;
+  // A veces sale $171.00$200.00 (oferta + tachado) → tomar el primer precio
+  const mdRe = /\]\((https?:\/\/[^)\s]*mercdn\.net[^)\s]*)\)\s*([^$\n\]]{5,160}?)\s+\$([\d,]+(?:\.\d{1,2})?)(?:\$[\d,]+(?:\.\d{1,2})?)?\s*\]\(\s*(https?:\/\/(?:www\.)?mercari\.com\/(?:us\/)?item\/(m?[a-z0-9]{6,})[^)\s]*)/gi;
   let m;
   while ((m = mdRe.exec(text)) !== null) {
     const title = String(m[2] || '').replace(/^[#*\-\s]+/, '').replace(/\s+/g, ' ').trim();
     const price = Number(String(m[3]).replace(/,/g, ''));
     const id = m[5];
-    pushUsMatch(out, seen, { id, title, price, q });
+    pushUsMatch(out, seen, { id, title, price, q, searchRank: rank++ });
   }
 
   // Sin imagen embebida: "Title $70.00](https://www.mercari.com/us/item/m…)"
   if (!out.length) {
-    const plainRe = /(?:^|[^\]])([^\[\]\n]{8,160}?)\s+\$([\d,]+(?:\.\d{1,2})?)\s*\]\(\s*(https?:\/\/(?:www\.)?mercari\.com\/(?:us\/)?item\/(m?[a-z0-9]{6,})[^)\s]*)/gi;
+    const plainRe = /(?:^|[^\]])([^\[\]\n]{8,160}?)\s+\$([\d,]+(?:\.\d{1,2})?)(?:\$[\d,]+(?:\.\d{1,2})?)?\s*\]\(\s*(https?:\/\/(?:www\.)?mercari\.com\/(?:us\/)?item\/(m?[a-z0-9]{6,})[^)\s]*)/gi;
     let pm;
     while ((pm = plainRe.exec(text)) !== null) {
       const title = String(pm[1] || '').replace(/^[#*\-\s.(]+/, '').replace(/\s+/g, ' ').trim();
       if (/^https?:/i.test(title) || /mercdn\.net/i.test(title)) continue;
       const price = Number(String(pm[2]).replace(/,/g, ''));
-      pushUsMatch(out, seen, { id: pm[4], title, price, q });
+      pushUsMatch(out, seen, { id: pm[4], title, price, q, searchRank: rank++ });
     }
   }
 
@@ -113,7 +134,7 @@ export function extractMercariUsMatches(html, query = '', ctx = {}) {
         .replace(/\s+/g, ' ')
         .trim()
         .slice(-120);
-      pushUsMatch(out, seen, { id, title: titleGuess, price, q });
+      pushUsMatch(out, seen, { id, title: titleGuess, price, q, searchRank: rank++ });
     }
   }
 
@@ -123,16 +144,34 @@ export function extractMercariUsMatches(html, query = '', ctx = {}) {
       const link = storeLinkForMatch({ ...row, source: 'mercari' }, { name: q });
       return { ...row, url: link?.url || ctx.searchUrl || '' };
     })
-    .sort((a, b) => queryTitleScore(b.title, q) - queryTitleScore(a.title, q) || a.price - b.price);
+    .sort((a, b) =>
+      queryTitleScore(b.title, q) - queryTitleScore(a.title, q)
+      || (a.searchRank ?? 99) - (b.searchRank ?? 99)
+      || a.price - b.price
+    );
 }
 
-function queryTitleScore(title, query) {
-  const t = String(title || '').toLowerCase();
-  const qTokens = String(query || '').toLowerCase().split(/\s+/).filter((x) => x.length > 2);
+export function queryTitleScore(title, query) {
+  const t = String(title || '')
+    .toLowerCase()
+    .replace(/[×✕✖]/g, 'x')
+    .replace(/[^a-z0-9\s]/g, ' ');
+  const stop = new Set(['buy', 'for', 'sale', 'the', 'and', 'with', 'figure', 'figura', 'en', 'venta']);
+  const qTokens = String(query || '')
+    .toLowerCase()
+    .replace(/[×✕✖]/g, 'x')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((x) => x.length > 2 && !stop.has(x));
   let score = 0;
   for (const tok of qTokens) {
     if (t.includes(tok)) score += 1;
     else if (tok.length >= 6 && t.includes(tok.slice(0, 6))) score += 0.5; // Ichibansho≈Ichiban
+  }
+  // Varios personajes del set en el mismo anuncio (Gon+Killua+Hisoka)
+  const cast = ['gon', 'killua', 'hisoka'].filter((c) => t.includes(c));
+  if (cast.length >= 2 && qTokens.some((tok) => cast.includes(tok) || tok === 'hunter')) {
+    score += cast.length;
   }
   // Penalizar si parece otra franquicia dominante
   if (/jujutsu|demon\s*slayer|dragon\s*ball|one\s*piece|naruto/i.test(t)
@@ -142,7 +181,7 @@ function queryTitleScore(title, query) {
   return score;
 }
 
-function pushUsMatch(out, seen, { id, title, price, q }) {
+function pushUsMatch(out, seen, { id, title, price, q, searchRank = 99 }) {
   if (!id || !(price > 0) || price > 50_000) return;
   const key = `${id}|${price}`;
   if (seen.has(key)) return;
@@ -160,6 +199,7 @@ function pushUsMatch(out, seen, { id, title, price, q }) {
     urlTrusted: true,
     url: `https://www.mercari.com/item/${id}`,
     query: q,
+    searchRank,
     note: `$${Number(price).toFixed(2)} en Mercari US`
   });
 }

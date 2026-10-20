@@ -118,7 +118,7 @@ async function boot() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.33').replace(/\W/g, '');
+      const swVer = String(window.APP_CONFIG?.APP_VERSION || '1.6.34').replace(/\W/g, '');
       const reg = await navigator.serviceWorker.register(`./service-worker.js?v=${swVer}`);
       await reg.update();
       // No activar/recargar solo: el usuario elige en el popup de versión.

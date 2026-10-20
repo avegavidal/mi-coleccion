@@ -8,7 +8,7 @@
 import { EbayActiveProvider, extractEbayListings, extractEbayPrices } from './EbayActiveProvider.js';
 import { lookupTcgPlayerMarket } from './TcgPlayerProvider.js';
 import { lookupMercariJpMarket, lookupMercariUsMarket } from './MercariJpProvider.js';
-import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, isPlausibleListingUrl, matchBelongsToItem, normalizeMarketUrl } from './EbayLinkProvider.js';
+import { ebayMarketUrls, buildShopLinksForQuery, buildVisualMarketLinks, isTcgCardItem, storeLinkForMatch, isDirectListingUrl, isPlausibleListingUrl, matchBelongsToItem, normalizeMarketUrl, preferredSearchQuery } from './EbayLinkProvider.js';
 import { getUsdJpyRate } from '../utils/dom.js';
 
 function readGeminiApiKey() {
@@ -461,13 +461,19 @@ export async function autoSearchMarketMatches(item, opts = {}) {
    * además scrape por keyword cuando ya hay nombre.
    */
   async function runMercariPass(attempt) {
-    const q = [
-      queries[0],
+    // Preferir nombre completo de la ficha (como en Mercari.com), no “Serie + buy”
+    const queryCandidates = [
+      preferredSearchQuery(item),
       item?.name,
-      [item?.series, item?.character_name].filter(Boolean).join(' '),
+      queries.find((q) => String(q || '').trim().length >= 12 && !/\b(buy|for sale)\b/i.test(q)),
+      queries[0],
+      [item?.series, item?.character_name || item?.character].filter(Boolean).join(' '),
       [item?.manufacturer, item?.series].filter(Boolean).join(' ')
-    ].map((s) => String(s || '').trim()).filter((s) => s.length >= 3);
-    const query = [...new Set(q)][0] || '';
+    ]
+      .map((s) => sanitizeMercariKeyword(s))
+      .filter((s) => s.length >= 3);
+    const queryList = [...new Set(queryCandidates)].slice(0, 2);
+    const query = queryList[0] || '';
 
     // 1) Con foto: Gemini + grounding centrado en Mercari JP (misma foto del identify)
     if (apiKey && hasPhoto && attempt <= 2) {
@@ -511,14 +517,16 @@ export async function autoSearchMarketMatches(item, opts = {}) {
       attempt,
       message: `Mercari US/JP (“${query.slice(0, 40)}”)…`
     });
+    // jina interno ≈18s → el race debe ser mayor o “timeout Mercari US” gana siempre
+    const mercariTimeoutMs = 24000;
     const mercariJobs = [
       Promise.race([
-        lookupMercariUsMarket(query, { limit: 10, signal }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari US')), 16000))
+        lookupMercariUsMarket(query, { limit: 10, signal, altQueries: queryList.slice(1) }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari US')), mercariTimeoutMs))
       ]).then((live) => ({ region: 'US', live })).catch((err) => ({ region: 'US', err })),
       Promise.race([
         lookupMercariJpMarket(query, { limit: 8, signal }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari JP')), 16000))
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout Mercari JP')), mercariTimeoutMs))
       ]).then((live) => ({ region: 'JP', live })).catch((err) => ({ region: 'JP', err }))
     ];
     const mercariResults = await Promise.all(mercariJobs);
@@ -598,8 +606,14 @@ export async function autoSearchMarketMatches(item, opts = {}) {
     const tasks = [];
     if (apiKey) tasks.push(runGeminiPass(attempt));
     if (hasPhoto || (!photoFirstPass && queries.length)) {
+      // Reintentar si aún no hay ficha Mercari US scrapada (JP de Gemini no cuenta)
+      const hasMercariUsListing = matches.some((m) =>
+        /mercari/i.test(String(m.source || ''))
+        && m.priceVerified === true
+        && /mercari\.com\/(?:us\/)?item\//i.test(String(m.url || ''))
+      );
       const needMercari = attempt === 1
-        || (attempt === 2 && !matches.some((m) => /mercari/i.test(String(m.source || ''))));
+        || (attempt === 2 && !hasMercariUsListing);
       if (needMercari) tasks.push(runMercariPass(attempt));
     }
     if (!photoFirstPass && queries.length) tasks.push(runEbayPass(attempt));
@@ -657,6 +671,16 @@ export async function autoSearchMarketMatches(item, opts = {}) {
   return snapshotMatches(false);
 }
 
+/** Keyword limpia para Mercari (sin “buy / for sale”). */
+function sanitizeMercariKeyword(raw) {
+  return String(raw || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(buy|for sale|en venta)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+}
+
 function buildSearchQueries(item) {
   const manufacturer = clean(item?.manufacturer);
   const series = clean(item?.series);
@@ -687,7 +711,12 @@ function buildSearchQueries(item) {
     }
     if (soft && !itemNumber) parts.push(`${soft} TCG`);
   } else {
-    // Anclar primero a fabricante + serie + personaje (menos ruido que “buy” genérico)
+    // Nombre completo primero: es lo que Mercari/eBay indexan (p. ej. HxH Ichibansho…)
+    if (fullName && fullName.length >= 10) {
+      parts.push(fullName);
+      parts.push(`${fullName} buy`);
+    }
+    // Anclar a fabricante + serie + personaje (menos ruido que “buy” genérico)
     if (manufacturer && series && character) {
       parts.push([manufacturer, series, character].join(' '));
       parts.push([manufacturer, series, character, 'figure'].join(' '));
@@ -696,10 +725,6 @@ function buildSearchQueries(item) {
       parts.push([series, character].join(' '));
       parts.push([series, character, 'figure', 'buy'].join(' '));
       parts.push([series, character, manufacturer].filter(Boolean).join(' '));
-    }
-    if (fullName && fullName.length >= 10) {
-      parts.push(fullName);
-      parts.push(`${fullName} buy`);
     }
     const buyBase = soft || [series, character].filter(Boolean).join(' ') || fullName;
     if (buyBase) {

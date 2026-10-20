@@ -1155,6 +1155,33 @@ test('extractMercariUsMatches lee $USD y /item/ del HTML', async () => {
   assert(target.currency === 'USD');
 });
 
+test('extractMercariUsMatches prioriza #1 y lee precio de oferta $a$b', async () => {
+  const merc = await import(pathToFileURL(join(root, 'js/providers/MercariJpProvider.js')).href);
+  const html = `
+[![Image 1](https://u-mercari-images.mercdn.net/photos/m54716522520_1.jpg) HUNTER×HUNTER GREED ISLAND Gon Killua Hisoka Ichiban Figure $149.99$200.00](https://www.mercari.com/us/item/m54716522520)
+[![Image 2](https://u-mercari-images.mercdn.net/photos/m22894222163_1.jpg) Hunter x Hunter Masterlise Ichibansho Hisoka Figure $60.00](https://www.mercari.com/us/item/m22894222163)
+  `;
+  const q = 'Hunter x Hunter Ichibansho Revible Moment Gon Killua Hisoka';
+  const hits = merc.extractMercariUsMatches(html, q);
+  assert(hits.length >= 2, String(hits.length));
+  assert(hits[0].price === 149.99, String(hits[0].price));
+  assert(/m54716522520/.test(hits[0].url), hits[0].url);
+  assert(merc.queryTitleScore(hits[0].title, q) > merc.queryTitleScore(hits[1].title, q));
+});
+
+test('preferredSearchQuery usa el nombre completo HxH', () => {
+  const item = {
+    name: 'Hunter x Hunter Ichibansho Revible Moment Gon Killua Hisoka',
+    series: 'Revible Moment',
+    character_name: 'Gon Killua Hisoka',
+    manufacturer: 'Bandai',
+    category: 'Figura'
+  };
+  const q = ebayLinks.preferredSearchQuery(item);
+  assert(/Hunter x Hunter Ichibansho/i.test(q), q);
+  assert(!/\bbuy\b/i.test(q), q);
+});
+
 test('matchBelongsToItem acepta anuncio HxH sin Revible en título', () => {
   const item = {
     name: 'Hunter x Hunter Ichibansho Revible Moment Gon Killua Hisoka',
